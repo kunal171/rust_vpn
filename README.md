@@ -31,3 +31,50 @@ src/
 └── bin/
     ├── vpn_client.rs
     └── vpn_server.rs
+```
+
+- `lib.rs` contains code shared by both applications.
+- `vpn_client.rs` is the client entry point.
+- `vpn_server.rs` is the server entry point.
+
+## Requirements
+
+- Linux
+- Stable Rust toolchain
+- Cargo
+
+## Build
+
+```bash
+cargo build
+```
+
+## Run
+
+```bash
+cargo run --bin vpn_client
+cargo run --bin vpn_server
+```
+
+These programs currently print startup messages and exit. They do not send network traffic yet.
+
+## Quality checks
+
+```bash
+cargo fmt --check
+cargo check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+## Next phase
+
+Phase 1 introduces synchronous UDP communication using `std::net::UdpSocket`.
+
+Success criterion:
+
+- Server binds to a localhost IPv4 address and port.
+- Client sends arbitrary binary data.
+- Server receives the exact bytes and identifies the sender.
+- Socket and decoding errors are reported explicitly.
+- Automated tests verify the basic exchange.
