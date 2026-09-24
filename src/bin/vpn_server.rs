@@ -1,10 +1,10 @@
+use rust_vpn::AppRole;
 use std::io;
 use std::net::UdpSocket;
-use rust_vpn::AppRole;
 const SERVER_ADDRESS: &str = "127.0.0.1:51820";
 const RECEIVE_BUFFER_SIZE: usize = 2048;
 
-fn main() ->io::Result<()> {
+fn main() -> io::Result<()> {
     let socket = UdpSocket::bind(SERVER_ADDRESS)?;
 
     println!(
