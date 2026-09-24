@@ -1,3 +1,4 @@
+use rust_vpn::AppRole;
 fn main() {
-    println!("VPN client");
+    println!("VPN {}", AppRole::Client.label());
 }
