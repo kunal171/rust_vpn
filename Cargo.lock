@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "vpn"
+name = "rust_vpn"
 version = "0.1.0"

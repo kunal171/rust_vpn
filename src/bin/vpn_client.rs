@@ -1,3 +1,3 @@
 fn main() {
-    println!("VPN server");
+    println!("VPN client");
 }
