@@ -15,14 +15,13 @@ fn main() -> io::Result<()> {
     );
 
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
-    
+
     loop {
         let (received_length, sender_address) = socket.recv_from(&mut buffer)?;
 
         println!("Received {received_length} bytes from {sender_address}");
         println!("Payload bytes: {:?}", &buffer[..received_length]);
     }
-
-
+    
     Ok(())
 }
