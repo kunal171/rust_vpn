@@ -1,3 +1,4 @@
+pub mod protocol;
 pub mod transport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
