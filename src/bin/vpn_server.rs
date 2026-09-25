@@ -1,6 +1,6 @@
 use rust_vpn::{
     AppRole,
-    transport::{SERVER_ADDRESS, RECEIVE_BUFFER_SIZE},
+    transport::{ACK_PAYLOAD, RECEIVE_BUFFER_SIZE, SERVER_ADDRESS},
 };
 use std::io;
 use std::net::UdpSocket;
@@ -20,7 +20,11 @@ fn main() -> io::Result<()> {
         let (received_length, sender_address) = socket.recv_from(&mut buffer)?;
 
         println!("Received {received_length} bytes from {sender_address}");
+
+        let acknowledgment_length = socket.send_to(ACK_PAYLOAD, sender_address)?;
+
+        println!("Sent {acknowledgment_length}-byte acknowledgment to {sender_address}");
+
         println!("Payload bytes: {:?}", &buffer[..received_length]);
     }
-
 }
