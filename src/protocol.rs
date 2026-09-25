@@ -1,3 +1,4 @@
+use std::fmt;
 pub const PROTOCOL_VERSION: u8 = 1;
 
 pub const HEADER_SIZE: usize = 16;
@@ -17,11 +18,40 @@ impl MessageType {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolError {
+    UnknownMessageType(u8),
+}
+
+impl fmt::Display for ProtocolError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownMessageType(value) => {
+                write!(formatter, "unknown message type: {value}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProtocolError {}
+
+impl TryFrom<u8> for MessageType {
+    type Error = ProtocolError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            value if value == Self::Data.as_u8() => Ok(Self::Data),
+            value if value == Self::Acknowledgment.as_u8() => Ok(Self::Acknowledgment),
+            value => Err(ProtocolError::UnknownMessageType(value)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         HEADER_SIZE, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE, MessageType,
-        PROTOCOL_VERSION,
+        PROTOCOL_VERSION, ProtocolError,
     };
 
     #[test]
@@ -36,5 +66,31 @@ mod tests {
     fn message_types_have_stable_wire_values() {
         assert_eq!(MessageType::Data.as_u8(), 1);
         assert_eq!(MessageType::Acknowledgment.as_u8(), 2);
+    }
+
+    #[test]
+    fn converts_known_wire_values_to_message_types() {
+        assert_eq!(
+            MessageType::try_from(1),
+            Ok(MessageType::Data)
+        );
+
+        assert_eq!(
+            MessageType::try_from(2),
+            Ok(MessageType::Acknowledgment)
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_message_type() {
+        assert_eq!(
+            MessageType::try_from(0),
+            Err(ProtocolError::UnknownMessageType(0))
+        );
+
+        assert_eq!(
+            MessageType::try_from(255),
+            Err(ProtocolError::UnknownMessageType(255))
+        );
     }
 }
