@@ -22,6 +22,5 @@ fn main() -> io::Result<()> {
         println!("Received {received_length} bytes from {sender_address}");
         println!("Payload bytes: {:?}", &buffer[..received_length]);
     }
-    
-    Ok(())
+
 }
