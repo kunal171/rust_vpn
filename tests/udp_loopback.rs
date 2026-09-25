@@ -22,10 +22,7 @@ fn transfers_binary_payload_over_loopback() -> io::Result<()> {
     let (received_length, sender_address) = server.recv_from(&mut buffer)?;
 
     assert_eq!(sender_address, client_address);
-    assert_eq!(
-        &buffer[..received_length],
-        expected_payload.as_slice()
-    );
+    assert_eq!(&buffer[..received_length], expected_payload.as_slice());
 
     Ok(())
 }
