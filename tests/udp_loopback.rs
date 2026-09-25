@@ -25,8 +25,7 @@ fn transfers_binary_payload_and_returns_acknowledgment() -> io::Result<()> {
 
     let mut server_buffer = [0_u8; 64];
 
-    let (received_length, sender_address) =
-        server.recv_from(&mut server_buffer)?;
+    let (received_length, sender_address) = server.recv_from(&mut server_buffer)?;
 
     assert_eq!(sender_address, client_address);
     assert_eq!(
@@ -34,15 +33,13 @@ fn transfers_binary_payload_and_returns_acknowledgment() -> io::Result<()> {
         expected_payload.as_slice()
     );
 
-    let acknowledgment_length =
-        server.send_to(ACK_PAYLOAD, sender_address)?;
+    let acknowledgment_length = server.send_to(ACK_PAYLOAD, sender_address)?;
 
     assert_eq!(acknowledgment_length, ACK_PAYLOAD.len());
 
     let mut client_buffer = [0_u8; 64];
 
-    let received_acknowledgment_length =
-        client.recv(&mut client_buffer)?;
+    let received_acknowledgment_length = client.recv(&mut client_buffer)?;
 
     assert_eq!(
         &client_buffer[..received_acknowledgment_length],

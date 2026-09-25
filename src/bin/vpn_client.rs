@@ -20,6 +20,14 @@ fn main() -> io::Result<()> {
     );
 
     let sent_length = socket.send(PAYLOAD)?;
+    if sent_length != PAYLOAD.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "UDP payload was not completely sent",
+        ));
+    }
+    println!("Sent {sent_length} bytes to {SERVER_ADDRESS}");
+    println!("Payload bytes: {PAYLOAD:?}");
 
     let mut acknowledgment_buffer = [0_u8; 64];
 
@@ -34,16 +42,6 @@ fn main() -> io::Result<()> {
         ));
     }
     println!("Received acknowledgment: {acknowledgment:?}");
-
-    if sent_length != PAYLOAD.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::WriteZero,
-            "UDP Payload was not completely sent",
-        ));
-    }
-
-    println!("Sent {sent_length} bytes to {SERVER_ADDRESS}");
-    println!("Payload bytes: {PAYLOAD:?}");
 
     Ok(())
 }

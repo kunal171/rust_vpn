@@ -6,19 +6,21 @@ This project exists to learn networking, Linux packet handling, and Rust systems
 
 ## Current status
 
-Phase 0: project skeleton.
+Phase 1: UDP client/server complete.
 
 Currently implemented:
 
 - Separate client and server binaries
-- Shared library crate
-- Basic unit-test foundation
-- Formatting and Clippy quality checks
+- Synchronous UDP communication over IPv4 loopback
+- Arbitrary binary payload transfer
+- Continuous server receive loop
+- Server acknowledgments and client receive timeout
+- Shared UDP transport configuration
+- Automated request-acknowledgment integration test
 
 Not yet implemented:
 
-- UDP communication
-- Packet framing
+- Binary packet framing
 - TUN interfaces
 - Routing or NAT
 - Encryption or authentication
@@ -28,12 +30,16 @@ Not yet implemented:
 ```text
 src/
 ├── lib.rs
+├── transport.rs
 └── bin/
     ├── vpn_client.rs
     └── vpn_server.rs
+tests/
+└── udp_loopback.rs
 ```
 
 - `lib.rs` contains code shared by both applications.
+- `transport.rs` contains shared UDP configuration.
 - `vpn_client.rs` is the client entry point.
 - `vpn_server.rs` is the server entry point.
 
@@ -52,11 +58,12 @@ cargo build
 ## Run
 
 ```bash
-cargo run --bin vpn_client
 cargo run --bin vpn_server
+# In a second terminal:
+cargo run --bin vpn_client
 ```
 
-These programs currently print startup messages and exit. They do not send network traffic yet.
+The client sends a binary UDP payload to `127.0.0.1:51820`. The server receives it, logs the sender and bytes, returns an acknowledgment, and continues waiting for more datagrams. The client exits after validating the acknowledgment or timing out.
 
 ## Quality checks
 
@@ -69,12 +76,12 @@ cargo test
 
 ## Next phase
 
-Phase 1 introduces synchronous UDP communication using `std::net::UdpSocket`.
+Phase 2 introduces strict binary packet framing above the UDP transport.
 
 Success criterion:
 
-- Server binds to a localhost IPv4 address and port.
-- Client sends arbitrary binary data.
-- Server receives the exact bytes and identifies the sender.
-- Socket and decoding errors are reported explicitly.
-- Automated tests verify the basic exchange.
+- Frames contain a version, message type, session identifier, counter, payload length, and payload.
+- Valid frames encode and decode without losing information.
+- Unknown versions and message types are rejected.
+- Truncated, oversized, and length-mismatched frames are rejected safely.
+- No encryption is introduced during this phase.
