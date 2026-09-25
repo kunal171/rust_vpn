@@ -1,14 +1,14 @@
-use rust_vpn::AppRole;
+use rust_vpn::{
+    AppRole,
+    transport::{CLIENT_BIND_ADDRESS, SERVER_ADDRESS},
+};
 use std::io;
 use std::net::UdpSocket;
-
-const CLIENT_ADDRESS: &str = "127.0.0.1:0";
-const SERVER_ADDRESS: &str = "127.0.0.1:51820";
 
 const PAYLOAD: &[u8] = &[0x00, 0x01, 0xff, b'H', b'i'];
 
 fn main() -> io::Result<()> {
-    let socket = UdpSocket::bind(CLIENT_ADDRESS)?;
+    let socket = UdpSocket::bind(CLIENT_BIND_ADDRESS)?;
 
     println!(
         "VPN {} Bound to {}",

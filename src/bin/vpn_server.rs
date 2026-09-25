@@ -1,8 +1,9 @@
-use rust_vpn::AppRole;
+use rust_vpn::{
+    AppRole,
+    transport::{SERVER_ADDRESS, RECEIVE_BUFFER_SIZE},
+};
 use std::io;
 use std::net::UdpSocket;
-const SERVER_ADDRESS: &str = "127.0.0.1:51820";
-const RECEIVE_BUFFER_SIZE: usize = 2048;
 
 fn main() -> io::Result<()> {
     let socket = UdpSocket::bind(SERVER_ADDRESS)?;
@@ -14,11 +15,14 @@ fn main() -> io::Result<()> {
     );
 
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
+    
+    loop {
+        let (received_length, sender_address) = socket.recv_from(&mut buffer)?;
 
-    let (received_length, sender_address) = socket.recv_from(&mut buffer)?;
+        println!("Received {received_length} bytes from {sender_address}");
+        println!("Payload bytes: {:?}", &buffer[..received_length]);
+    }
 
-    println!("Received {received_length} bytes from {sender_address}");
-    println!("Payload bytes: {:?}", &buffer[..received_length]);
 
     Ok(())
 }
