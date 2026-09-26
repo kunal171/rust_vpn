@@ -5,7 +5,7 @@
 
 use rust_vpn::{
     AppRole,
-    protocol::Frame,
+    protocol::{Frame, MessageType},
     transport::{ACK_PAYLOAD, RECEIVE_BUFFER_SIZE, SERVER_ADDRESS},
 };
 use std::io;
@@ -50,7 +50,19 @@ fn main() -> io::Result<()> {
 
         // The socket is not connected, so reply explicitly to the address that
         // arrived with this datagram. This lets one socket serve many clients.
-        let acknowledgment_length = socket.send_to(ACK_PAYLOAD, sender_address)?;
+
+        let acknowledgment = Frame::new(
+            MessageType::Acknowledgment,
+            frame.session_id(),
+            frame.counter(),
+            Vec::new(),
+        )
+        .expect("an empty acknowledgment payload is always valid");
+
+        let encoded_acknowledgment = acknowledgment.encode();
+
+        let acknowledgment_length =
+            socket.send_to(&encoded_acknowledgment, sender_address)?;
 
         println!("Sent {acknowledgment_length}-byte acknowledgment to {sender_address}");
     }

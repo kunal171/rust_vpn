@@ -60,16 +60,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut acknowledgment_buffer = [0_u8; 64];
 
     let acknowledgment_length = socket.recv(&mut acknowledgment_buffer)?;
+    let acknowledgment =
+        Frame::decode(&acknowledgment_buffer[..acknowledgment_length])?;
 
     // Only the prefix reported by `recv` contains bytes from this datagram; the
     // rest of the fixed-size array still contains its initial zero values.
-    let acknowledgment = &acknowledgment_buffer[..acknowledgment_length];
-
-    if acknowledgment != ACK_PAYLOAD {
-        return Err(Box::new(io::Error::new(
+    if acknowledgment.message_type() != MessageType::Acknowledgment
+        || acknowledgment.session_id() != SESSION_ID
+        || acknowledgment.counter() != PACKET_COUNTER
+        || !acknowledgment.payload().is_empty()
+    {
+        return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "server returned an unexpected acknowledgment",
-        )));
+            "server returned an invalid acknowledgment frame",
+        )
+        .into());
     }
     println!("Received acknowledgment: {acknowledgment:?}");
 
