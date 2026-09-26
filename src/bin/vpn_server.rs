@@ -1,6 +1,12 @@
+//! Minimal UDP server used to exercise framed communication over UDP.
+//!
+//! It validates each received frame and replies with a framed acknowledgment.
+//! It does not yet tunnel or encrypt network traffic.
+
 use rust_vpn::{
     AppRole,
-    transport::{ACK_PAYLOAD, RECEIVE_BUFFER_SIZE, SERVER_ADDRESS},
+    protocol::Frame,
+    transport::{RECEIVE_BUFFER_SIZE, SERVER_ADDRESS},
 };
 use std::io;
 use std::net::UdpSocket;
@@ -14,17 +20,58 @@ fn main() -> io::Result<()> {
         socket.local_addr()?
     );
 
+    // Allocate once and reuse the same stack buffer for every datagram.
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
 
     loop {
+        // Unlike TCP, UDP preserves datagram boundaries. `recv_from` returns
+        // both this datagram byte count and the address that sent it.
         let (received_length, sender_address) = socket.recv_from(&mut buffer)?;
 
-        println!("Received {received_length} bytes from {sender_address}");
+        let received_bytes = &buffer[..received_length];
 
-        let acknowledgment_length = socket.send_to(ACK_PAYLOAD, sender_address)?;
+        let frame = match Frame::decode(received_bytes) {
+            Ok(frame) => frame,
+            Err(error) => {
+                eprintln!("Rejected malformed frame from {sender_address}: {error}");
+                continue;
+            }
+        };
+        let acknowledgment = match frame.acknowledgment() {
+            Some(acknowledgment) => acknowledgment,
+            None => {
+                eprintln!(
+                    "Ignoring unexpected {:?} frame from {sender_address}",
+                    frame.message_type()
+                );
+                continue;
+            }
+        };
+
+        println!(
+            "Decoded frame: version={}, type={:?}, session={}, counter={}",
+            frame.version(),
+            frame.message_type(),
+            frame.session_id(),
+            frame.counter(),
+        );
+
+        println!("Payload bytes: {:?}", frame.payload());
+
+        // The socket is not connected, so reply explicitly to the address that
+        // arrived with this datagram. This lets one socket serve many clients.
+
+        let encoded_acknowledgment = acknowledgment.encode();
+
+        let acknowledgment_length = socket.send_to(&encoded_acknowledgment, sender_address)?;
+
+        if acknowledgment_length != encoded_acknowledgment.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "UDP acknowledgment frame was not completely sent",
+            ));
+        }
 
         println!("Sent {acknowledgment_length}-byte acknowledgment to {sender_address}");
-
-        println!("Payload bytes: {:?}", &buffer[..received_length]);
     }
 }

@@ -6,23 +6,27 @@ This project exists to learn networking, Linux packet handling, and Rust systems
 
 ## Current status
 
-Phase 1: UDP client/server complete.
+Phase 2: binary packet framing complete.
 
 Currently implemented:
 
-- Separate client and server binaries
-- Synchronous UDP communication over IPv4 loopback
+- Separate UDP client and server binaries over IPv4 loopback
 - Arbitrary binary payload transfer
-- Continuous server receive loop
-- Server acknowledgments and client receive timeout
-- Shared UDP transport configuration
-- Automated request-acknowledgment integration test
+- Versioned binary frames with message type, session ID, packet counter, payload length, and payload
+- Explicit big-endian encoding for multi-byte header fields
+- Strict decoding with bounds and length validation
+- Rejection of unknown versions, unknown message types, truncated frames, oversized frames, and length mismatches
+- Framed data and acknowledgment messages
+- Server-side protection against acknowledgment loops
+- Client receive timeout and acknowledgment validation
+- Unit tests for valid and malformed frames
+- Real-socket framed UDP integration test
 
 Not yet implemented:
 
-- Binary packet framing
+- Packet-capture verification with tcpdump or Wireshark
 - TUN interfaces
-- Routing or NAT
+- Linux namespaces, routing, or NAT
 - Encryption or authentication
 
 ## Project structure
@@ -30,6 +34,7 @@ Not yet implemented:
 ```text
 src/
 ├── lib.rs
+├── protocol.rs
 ├── transport.rs
 └── bin/
     ├── vpn_client.rs
@@ -38,10 +43,11 @@ tests/
 └── udp_loopback.rs
 ```
 
-- `lib.rs` contains code shared by both applications.
+- `protocol.rs` defines the frame format, encoding, decoding, and validation.
 - `transport.rs` contains shared UDP configuration.
-- `vpn_client.rs` is the client entry point.
-- `vpn_server.rs` is the server entry point.
+- `vpn_client.rs` sends data frames and validates acknowledgment frames.
+- `vpn_server.rs` validates data frames and returns acknowledgment frames.
+- `udp_loopback.rs` verifies a framed exchange over real UDP sockets.
 
 ## Requirements
 
@@ -63,7 +69,7 @@ cargo run --bin vpn_server
 cargo run --bin vpn_client
 ```
 
-The client sends a binary UDP payload to `127.0.0.1:51820`. The server receives it, logs the sender and bytes, returns an acknowledgment, and continues waiting for more datagrams. The client exits after validating the acknowledgment or timing out.
+The client encodes a five-byte binary payload inside a 21-byte data frame and sends it to `127.0.0.1:51820`. The server validates and decodes the frame, then returns a 16-byte acknowledgment frame containing the same session ID and packet counter. The client validates that acknowledgment or exits after its receive timeout.
 
 ## Quality checks
 
@@ -76,12 +82,13 @@ cargo test
 
 ## Next phase
 
-Phase 2 introduces strict binary packet framing above the UDP transport.
+Phase 3 uses tcpdump and Wireshark to prove the packet path and inspect each encapsulation layer.
 
-Success criterion:
+Planned work:
 
-- Frames contain a version, message type, session identifier, counter, payload length, and payload.
-- Valid frames encode and decode without losing information.
-- Unknown versions and message types are rejected.
-- Truncated, oversized, and length-mismatched frames are rejected safely.
-- No encryption is introduced during this phase.
+- Capture the loopback exchange with tcpdump.
+- Inspect Ethernet or loopback framing, IPv4, UDP, and the application frame.
+- Locate the protocol version, message type, session ID, counter, payload length, and payload in captured bytes.
+- Improve packet-counter and frame logging where captures show it is useful.
+
+Success criterion: packet captures clearly demonstrate the complete client-to-server data frame and server-to-client acknowledgment frame.
