@@ -5,6 +5,7 @@
 
 use rust_vpn::{
     AppRole,
+    protocol::Frame,
     transport::{ACK_PAYLOAD, RECEIVE_BUFFER_SIZE, SERVER_ADDRESS},
 };
 use std::io;
@@ -27,15 +28,30 @@ fn main() -> io::Result<()> {
         // both this datagram byte count and the address that sent it.
         let (received_length, sender_address) = socket.recv_from(&mut buffer)?;
 
-        println!("Received {received_length} bytes from {sender_address}");
+        let received_bytes = &buffer[..received_length];
+
+        let frame = match Frame::decode(received_bytes) {
+            Ok(frame) => frame,
+            Err(error) => {
+                eprintln!("Rejected malformed frame from {sender_address}: {error}");
+                continue;
+            }
+        };
+
+        println!(
+            "Decoded frame: version={}, type={:?}, session={}, counter={}",
+            frame.version(),
+            frame.message_type(),
+            frame.session_id(),
+            frame.counter(),
+        );
+
+        println!("Payload bytes: {:?}", frame.payload());
 
         // The socket is not connected, so reply explicitly to the address that
         // arrived with this datagram. This lets one socket serve many clients.
         let acknowledgment_length = socket.send_to(ACK_PAYLOAD, sender_address)?;
 
         println!("Sent {acknowledgment_length}-byte acknowledgment to {sender_address}");
-
-        // Inspect only bytes written by `recv_from`, not unused buffer space.
-        println!("Payload bytes: {:?}", &buffer[..received_length]);
     }
 }

@@ -229,6 +229,31 @@ impl Frame {
             payload: bytes[HEADER_SIZE..].to_vec(),
         })
     }
+
+    /// Returns the protocol version stored in this frame.
+    pub const fn version(&self) -> u8 {
+        self.version
+    }
+
+    /// Returns the frame's message type.
+    pub const fn message_type(&self) -> MessageType {
+        self.message_type
+    }
+
+    /// Returns the session that owns this frame.
+    pub const fn session_id(&self) -> u32 {
+        self.session_id
+    }
+
+    /// Returns this frame's packet counter.
+    pub const fn counter(&self) -> u64 {
+        self.counter
+    }
+
+    /// Borrows the payload without copying it.
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
 }
 
 impl std::error::Error for ProtocolError {}
