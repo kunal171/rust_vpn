@@ -1,12 +1,12 @@
-//! Minimal UDP client used to exercise the transport layer.
+//! Minimal UDP client used to exercise framed communication over UDP.
 //!
-//! It sends one binary datagram and waits for an application-level `ACK`.
-//! This is a networking milestone, not yet an encrypted VPN client.
+//! It sends one binary `Data` frame and validates the matching framed
+//! acknowledgment. This is not yet an encrypted VPN client.
 
 use rust_vpn::{
     AppRole,
     protocol::{Frame, MessageType},
-    transport::{ACK_PAYLOAD, CLIENT_BIND_ADDRESS, CLIENT_READ_TIMEOUT, SERVER_ADDRESS},
+    transport::{CLIENT_BIND_ADDRESS, CLIENT_READ_TIMEOUT, SERVER_ADDRESS},
 };
 use std::io;
 use std::net::UdpSocket;
@@ -60,8 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut acknowledgment_buffer = [0_u8; 64];
 
     let acknowledgment_length = socket.recv(&mut acknowledgment_buffer)?;
-    let acknowledgment =
-        Frame::decode(&acknowledgment_buffer[..acknowledgment_length])?;
+    let acknowledgment = Frame::decode(&acknowledgment_buffer[..acknowledgment_length])?;
 
     // Only the prefix reported by `recv` contains bytes from this datagram; the
     // rest of the fixed-size array still contains its initial zero values.

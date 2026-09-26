@@ -17,10 +17,5 @@ pub const SERVER_ADDRESS: &str = "127.0.0.1:51820";
 /// truncated by `recv_from`, so its full contents would not be usable.
 pub const RECEIVE_BUFFER_SIZE: usize = 2048;
 
-/// Temporary application-level reply used to prove two-way UDP communication.
-///
-/// This is not a delivery guarantee built into UDP and is not yet a framed
-/// protocol acknowledgment.
-pub const ACK_PAYLOAD: &[u8] = b"ACK";
 /// Prevents the client from waiting forever when no reply arrives.
 pub const CLIENT_READ_TIMEOUT: Duration = Duration::from_secs(2);

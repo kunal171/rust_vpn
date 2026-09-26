@@ -1,12 +1,12 @@
-//! Minimal UDP server used to exercise the transport layer.
+//! Minimal UDP server used to exercise framed communication over UDP.
 //!
-//! It receives binary datagrams and replies to each sender with an
-//! application-level `ACK`. It does not yet parse or tunnel VPN frames.
+//! It validates each received frame and replies with a framed acknowledgment.
+//! It does not yet tunnel or encrypt network traffic.
 
 use rust_vpn::{
     AppRole,
     protocol::{Frame, MessageType},
-    transport::{ACK_PAYLOAD, RECEIVE_BUFFER_SIZE, SERVER_ADDRESS},
+    transport::{RECEIVE_BUFFER_SIZE, SERVER_ADDRESS},
 };
 use std::io;
 use std::net::UdpSocket;
@@ -61,8 +61,7 @@ fn main() -> io::Result<()> {
 
         let encoded_acknowledgment = acknowledgment.encode();
 
-        let acknowledgment_length =
-            socket.send_to(&encoded_acknowledgment, sender_address)?;
+        let acknowledgment_length = socket.send_to(&encoded_acknowledgment, sender_address)?;
 
         println!("Sent {acknowledgment_length}-byte acknowledgment to {sender_address}");
     }

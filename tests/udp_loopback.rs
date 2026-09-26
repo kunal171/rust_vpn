@@ -1,18 +1,24 @@
-//! End-to-end test of one UDP request and acknowledgment on loopback.
+//! End-to-end test of framed UDP data and acknowledgment on loopback.
 //!
 //! This uses real operating-system sockets rather than mocks, so it verifies
-//! the same bind, send, receive, and reply operations used by the binaries.
+//! that encoded protocol frames survive an actual UDP round trip.
 
-use std::io;
 use std::net::UdpSocket;
 use std::time::Duration;
 
-use rust_vpn::transport::ACK_PAYLOAD;
+use rust_vpn::{
+    protocol::{Frame, MessageType},
+    transport::RECEIVE_BUFFER_SIZE,
+};
+
+const SESSION_ID: u32 = 42;
+const PACKET_COUNTER: u64 = 7;
 
 #[test]
-fn transfers_binary_payload_and_returns_acknowledgment() -> io::Result<()> {
+fn transfers_data_frame_and_returns_acknowledgment_frame() -> Result<(), Box<dyn std::error::Error>>
+{
     // Port 0 avoids conflicts by letting the OS choose free ports for the test.
-    // Timeouts turn a lost datagram or bug into a test failure instead of a hang.
+    // Timeouts turn a lost datagram or bug into a failure instead of a hang.
     let server = UdpSocket::bind("127.0.0.1:0")?;
     server.set_read_timeout(Some(Duration::from_secs(1)))?;
 
@@ -22,43 +28,57 @@ fn transfers_binary_payload_and_returns_acknowledgment() -> io::Result<()> {
     let server_address = server.local_addr()?;
     let client_address = client.local_addr()?;
 
-    // UDP `connect` stores the peer address; it does not establish a connection
-    // or perform a network handshake as TCP does.
+    // UDP `connect` stores the peer address; it performs no TCP-style handshake.
     client.connect(server_address)?;
 
-    // Include non-text bytes to prove the transport preserves binary data.
-    let expected_payload = [0x00, 0x01, 0xff, b'H', b'i'];
+    let expected_payload = vec![0x00, 0x01, 0xff, 0x48, 0x69];
+    let data_frame = Frame::new(
+        MessageType::Data,
+        SESSION_ID,
+        PACKET_COUNTER,
+        expected_payload.clone(),
+    )?;
+    let encoded_data_frame = data_frame.encode();
 
-    let sent_length = client.send(&expected_payload)?;
+    let sent_length = client.send(&encoded_data_frame)?;
+    assert_eq!(sent_length, encoded_data_frame.len());
 
-    assert_eq!(sent_length, expected_payload.len());
-
-    let mut server_buffer = [0_u8; 64];
-
-    // The kernel queues the datagram until this receive call, so this simple
-    // loopback test does not need a separate server thread.
+    let mut server_buffer = [0_u8; RECEIVE_BUFFER_SIZE];
     let (received_length, sender_address) = server.recv_from(&mut server_buffer)?;
 
-    // Validate both who sent the datagram and exactly which bytes arrived.
     assert_eq!(sender_address, client_address);
-    assert_eq!(
-        &server_buffer[..received_length],
-        expected_payload.as_slice()
-    );
 
-    // Send the reply along the reverse path to the observed sender address.
-    let acknowledgment_length = server.send_to(ACK_PAYLOAD, sender_address)?;
+    let received_frame = Frame::decode(&server_buffer[..received_length])?;
 
-    assert_eq!(acknowledgment_length, ACK_PAYLOAD.len());
+    assert_eq!(received_frame.message_type(), MessageType::Data);
+    assert_eq!(received_frame.session_id(), SESSION_ID);
+    assert_eq!(received_frame.counter(), PACKET_COUNTER);
+    assert_eq!(received_frame.payload(), expected_payload.as_slice());
 
-    let mut client_buffer = [0_u8; 64];
+    // Echoing the identifiers tells the client exactly which data frame is
+    // being acknowledged without copying its payload into the response.
+    let acknowledgment = Frame::new(
+        MessageType::Acknowledgment,
+        received_frame.session_id(),
+        received_frame.counter(),
+        Vec::new(),
+    )?;
+    let encoded_acknowledgment = acknowledgment.encode();
 
+    let acknowledgment_length = server.send_to(&encoded_acknowledgment, sender_address)?;
+    assert_eq!(acknowledgment_length, encoded_acknowledgment.len());
+
+    let mut client_buffer = [0_u8; RECEIVE_BUFFER_SIZE];
     let received_acknowledgment_length = client.recv(&mut client_buffer)?;
+    let received_acknowledgment = Frame::decode(&client_buffer[..received_acknowledgment_length])?;
 
     assert_eq!(
-        &client_buffer[..received_acknowledgment_length],
-        ACK_PAYLOAD
+        received_acknowledgment.message_type(),
+        MessageType::Acknowledgment
     );
+    assert_eq!(received_acknowledgment.session_id(), SESSION_ID);
+    assert_eq!(received_acknowledgment.counter(), PACKET_COUNTER);
+    assert!(received_acknowledgment.payload().is_empty());
 
     Ok(())
 }
