@@ -254,6 +254,23 @@ impl Frame {
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }
+
+    /// Builds the acknowledgment for a data frame.
+    ///
+    /// Acknowledgment frames return `None` so peers cannot create an ACK loop.
+    pub fn acknowledgment(&self) -> Option<Self> {
+        if self.message_type != MessageType::Data {
+            return None;
+        }
+
+        Some(Self {
+            version: self.version,
+            message_type: MessageType::Acknowledgment,
+            session_id: self.session_id,
+            counter: self.counter,
+            payload: Vec::new(),
+        })
+    }
 }
 
 impl std::error::Error for ProtocolError {}
@@ -458,5 +475,24 @@ mod tests {
                 maximum: MAX_PAYLOAD_SIZE,
             })
         );
+    }
+
+    #[test]
+    fn data_frame_creates_matching_empty_acknowledgment() {
+        let data = Frame::new(MessageType::Data, 42, 7, vec![0xaa]).unwrap();
+
+        let acknowledgment = data.acknowledgment().unwrap();
+
+        assert_eq!(acknowledgment.message_type(), MessageType::Acknowledgment);
+        assert_eq!(acknowledgment.session_id(), 42);
+        assert_eq!(acknowledgment.counter(), 7);
+        assert!(acknowledgment.payload().is_empty());
+    }
+
+    #[test]
+    fn acknowledgment_frame_does_not_create_another_acknowledgment() {
+        let acknowledgment = Frame::new(MessageType::Acknowledgment, 42, 7, Vec::new()).unwrap();
+
+        assert_eq!(acknowledgment.acknowledgment(), None);
     }
 }

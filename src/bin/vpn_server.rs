@@ -5,7 +5,7 @@
 
 use rust_vpn::{
     AppRole,
-    protocol::{Frame, MessageType},
+    protocol::Frame,
     transport::{RECEIVE_BUFFER_SIZE, SERVER_ADDRESS},
 };
 use std::io;
@@ -37,13 +37,16 @@ fn main() -> io::Result<()> {
                 continue;
             }
         };
-        if frame.message_type() != MessageType::Data {
-            eprintln!(
-                "Ignoring unexpected {:?} frame from {sender_address}",
-                frame.message_type()
-            );
-            continue;
-        }
+        let acknowledgment = match frame.acknowledgment() {
+            Some(acknowledgment) => acknowledgment,
+            None => {
+                eprintln!(
+                    "Ignoring unexpected {:?} frame from {sender_address}",
+                    frame.message_type()
+                );
+                continue;
+            }
+        };
 
         println!(
             "Decoded frame: version={}, type={:?}, session={}, counter={}",
@@ -57,14 +60,6 @@ fn main() -> io::Result<()> {
 
         // The socket is not connected, so reply explicitly to the address that
         // arrived with this datagram. This lets one socket serve many clients.
-
-        let acknowledgment = Frame::new(
-            MessageType::Acknowledgment,
-            frame.session_id(),
-            frame.counter(),
-            Vec::new(),
-        )
-        .expect("an empty acknowledgment payload is always valid");
 
         let encoded_acknowledgment = acknowledgment.encode();
 

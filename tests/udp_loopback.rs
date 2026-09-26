@@ -57,12 +57,9 @@ fn transfers_data_frame_and_returns_acknowledgment_frame() -> Result<(), Box<dyn
 
     // Echoing the identifiers tells the client exactly which data frame is
     // being acknowledged without copying its payload into the response.
-    let acknowledgment = Frame::new(
-        MessageType::Acknowledgment,
-        received_frame.session_id(),
-        received_frame.counter(),
-        Vec::new(),
-    )?;
+    let acknowledgment = received_frame
+        .acknowledgment()
+        .expect("a data frame must produce an acknowledgment");
     let encoded_acknowledgment = acknowledgment.encode();
 
     let acknowledgment_length = server.send_to(&encoded_acknowledgment, sender_address)?;
