@@ -37,6 +37,13 @@ fn main() -> io::Result<()> {
                 continue;
             }
         };
+        if frame.message_type() != MessageType::Data {
+            eprintln!(
+                "Ignoring unexpected {:?} frame from {sender_address}",
+                frame.message_type()
+            );
+            continue;
+        }
 
         println!(
             "Decoded frame: version={}, type={:?}, session={}, counter={}",
@@ -62,6 +69,13 @@ fn main() -> io::Result<()> {
         let encoded_acknowledgment = acknowledgment.encode();
 
         let acknowledgment_length = socket.send_to(&encoded_acknowledgment, sender_address)?;
+
+        if acknowledgment_length != encoded_acknowledgment.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "UDP acknowledgment frame was not completely sent",
+            ));
+        }
 
         println!("Sent {acknowledgment_length}-byte acknowledgment to {sender_address}");
     }
