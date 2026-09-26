@@ -54,14 +54,27 @@ pub enum ProtocolError {
     UnknownMessageType(u8),
 
     /// The payload cannot fit inside the configured maximum frame size.
-    PayloadTooLarge { actual: usize, maximum: usize },
+    PayloadTooLarge {
+        actual: usize,
+        maximum: usize,
+    },
 
-    FrameTooShort { actual: usize, maximum: usize },
-    FrameTooLarge { actual: usize, maximum: usize },
-    UnsupportedVersion { received: u8, supported: u8 },
-    PayloadLengthMismatch { declared: usize, actual: usize },
-
-    
+    FrameTooShort {
+        actual: usize,
+        minimum: usize,
+    },
+    FrameTooLarge {
+        actual: usize,
+        maximum: usize,
+    },
+    UnsupportedVersion {
+        received: u8,
+        supported: u8,
+    },
+    PayloadLengthMismatch {
+        declared: usize,
+        actual: usize,
+    },
 }
 
 impl fmt::Display for ProtocolError {
@@ -149,10 +162,9 @@ impl Frame {
 
     /// Parses and validates one complete binary frame.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
-
         if bytes.len() < HEADER_SIZE {
-            return Err(ProtocolError::FrameTooShort{
-                actual:: bytes.len(),
+            return Err(ProtocolError::FrameTooShort {
+                actual: bytes.len(),
                 minimum: HEADER_SIZE,
             });
         }
@@ -166,7 +178,7 @@ impl Frame {
 
         let version = bytes[0];
 
-        if version! = PROTOCOL_VERSION {
+        if version != PROTOCOL_VERSION {
             return Err(ProtocolError::UnsupportedVersion {
                 received: version,
                 supported: PROTOCOL_VERSION,
@@ -324,13 +336,7 @@ mod tests {
 
     #[test]
     fn encoded_frame_decodes_without_losing_information() {
-        let original = Frame::new(
-            MessageType::Data,
-            0x0102_0304,
-            42,
-            vec![0xde, 0xad],
-        )
-        .unwrap();
+        let original = Frame::new(MessageType::Data, 0x0102_0304, 42, vec![0xde, 0xad]).unwrap();
 
         let encoded = original.encode();
         let decoded = Frame::decode(&encoded);
@@ -347,6 +353,84 @@ mod tests {
             Err(ProtocolError::FrameTooShort {
                 actual: 1,
                 minimum: HEADER_SIZE,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_frame_larger_than_maximum() {
+        let bytes = vec![0_u8; MAX_FRAME_SIZE + 1];
+
+        assert_eq!(
+            Frame::decode(&bytes),
+            Err(ProtocolError::FrameTooLarge {
+                actual: MAX_FRAME_SIZE + 1,
+                maximum: MAX_FRAME_SIZE,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_protocol_version() {
+        let frame = Frame::new(MessageType::Data, 42, 1, vec![0xaa]).unwrap();
+        let mut bytes = frame.encode();
+
+        bytes[0] = 2;
+
+        assert_eq!(
+            Frame::decode(&bytes),
+            Err(ProtocolError::UnsupportedVersion {
+                received: 2,
+                supported: PROTOCOL_VERSION,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_message_type_in_frame() {
+        let frame = Frame::new(MessageType::Data, 42, 1, vec![0xaa]).unwrap();
+        let mut bytes = frame.encode();
+
+        bytes[1] = 0xff;
+
+        assert_eq!(
+            Frame::decode(&bytes),
+            Err(ProtocolError::UnknownMessageType(0xff))
+        );
+    }
+
+    #[test]
+    fn rejects_payload_length_mismatch() {
+        let frame = Frame::new(MessageType::Data, 42, 1, vec![0xaa, 0xbb]).unwrap();
+
+        let mut bytes = frame.encode();
+
+        // The frame contains two payload bytes, but the header claims three.
+        bytes[14..16].copy_from_slice(&3_u16.to_be_bytes());
+
+        assert_eq!(
+            Frame::decode(&bytes),
+            Err(ProtocolError::PayloadLengthMismatch {
+                declared: 3,
+                actual: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_declared_payload_larger_than_maximum() {
+        let frame = Frame::new(MessageType::Data, 42, 1, Vec::new()).unwrap();
+        let mut bytes = frame.encode();
+
+        let oversized_length = u16::try_from(MAX_PAYLOAD_SIZE + 1).unwrap();
+
+        bytes[14..16].copy_from_slice(&oversized_length.to_be_bytes());
+
+        assert_eq!(
+            Frame::decode(&bytes),
+            Err(ProtocolError::PayloadTooLarge {
+                actual: MAX_PAYLOAD_SIZE + 1,
+                maximum: MAX_PAYLOAD_SIZE,
             })
         );
     }
