@@ -55,6 +55,13 @@ pub enum ProtocolError {
 
     /// The payload cannot fit inside the configured maximum frame size.
     PayloadTooLarge { actual: usize, maximum: usize },
+
+    FrameTooShort { actual: usize, maximum: usize },
+    FrameTooLarge { actual: usize, maximum: usize },
+    UnsupportedVersion { received: u8, supported: u8 },
+    PayloadLengthMismatch { declared: usize, actual: usize },
+
+    
 }
 
 impl fmt::Display for ProtocolError {
@@ -67,6 +74,33 @@ impl fmt::Display for ProtocolError {
                 write!(
                     formatter,
                     "payload contains {actual} bytes, but the maximum is {maximum}"
+                )
+            }
+            Self::FrameTooShort { actual, minimum } => {
+                write!(
+                    formatter,
+                    "frame contains {actual} bytes, but at least {minimum} are required"
+                )
+            }
+            Self::FrameTooLarge { actual, maximum } => {
+                write!(
+                    formatter,
+                    "frame contains {actual} bytes, but the maximum is {maximum}"
+                )
+            }
+            Self::UnsupportedVersion {
+                received,
+                supported,
+            } => {
+                write!(
+                    formatter,
+                    "unsupported protocol version {received}; supported version is {supported}"
+                )
+            }
+            Self::PayloadLengthMismatch { declared, actual } => {
+                write!(
+                    formatter,
+                    "header declares {declared} payload bytes, but {actual} were received"
                 )
             }
         }
@@ -96,6 +130,7 @@ impl Frame {
         })
     }
 
+    /// Serializes this frame using the protocol's network byte order.
     pub fn encode(&self) -> Vec<u8> {
         let payload_length =
             u16::try_from(self.payload.len()).expect("validated payload length fits in u16");
@@ -110,6 +145,77 @@ impl Frame {
         bytes.extend_from_slice(&self.payload);
 
         bytes
+    }
+
+    /// Parses and validates one complete binary frame.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
+
+        if bytes.len() < HEADER_SIZE {
+            return Err(ProtocolError::FrameTooShort{
+                actual:: bytes.len(),
+                minimum: HEADER_SIZE,
+            });
+        }
+
+        if bytes.len() > MAX_FRAME_SIZE {
+            return Err(ProtocolError::FrameTooLarge {
+                actual: bytes.len(),
+                maximum: MAX_FRAME_SIZE,
+            });
+        }
+
+        let version = bytes[0];
+
+        if version! = PROTOCOL_VERSION {
+            return Err(ProtocolError::UnsupportedVersion {
+                received: version,
+                supported: PROTOCOL_VERSION,
+            });
+        }
+
+        let message_type = MessageType::try_from(bytes[1])?;
+
+        let session_id = u32::from_be_bytes(
+            bytes[2..6]
+                .try_into()
+                .expect("frame header contains four session ID bytes"),
+        );
+
+        let counter = u64::from_be_bytes(
+            bytes[6..14]
+                .try_into()
+                .expect("frame header contains eight counter bytes"),
+        );
+
+        let declared_payload_length = usize::from(u16::from_be_bytes(
+            bytes[14..16]
+                .try_into()
+                .expect("frame header contains two payload-length bytes"),
+        ));
+
+        if declared_payload_length > MAX_PAYLOAD_SIZE {
+            return Err(ProtocolError::PayloadTooLarge {
+                actual: declared_payload_length,
+                maximum: MAX_PAYLOAD_SIZE,
+            });
+        }
+
+        let actual_payload_length = bytes.len() - HEADER_SIZE;
+
+        if declared_payload_length != actual_payload_length {
+            return Err(ProtocolError::PayloadLengthMismatch {
+                declared: declared_payload_length,
+                actual: actual_payload_length,
+            });
+        }
+
+        Ok(Self {
+            version,
+            message_type,
+            session_id,
+            counter,
+            payload: bytes[HEADER_SIZE..].to_vec(),
+        })
     }
 }
 
@@ -213,6 +319,35 @@ mod tests {
                 0x09, 0x0a, 0x0b, 0x0c, 0x00, 0x02, // payload length
                 0xde, 0xad, // payload
             ]
+        );
+    }
+
+    #[test]
+    fn encoded_frame_decodes_without_losing_information() {
+        let original = Frame::new(
+            MessageType::Data,
+            0x0102_0304,
+            42,
+            vec![0xde, 0xad],
+        )
+        .unwrap();
+
+        let encoded = original.encode();
+        let decoded = Frame::decode(&encoded);
+
+        assert_eq!(decoded, Ok(original));
+    }
+
+    #[test]
+    fn rejects_frame_shorter_than_header() {
+        let bytes = [PROTOCOL_VERSION];
+
+        assert_eq!(
+            Frame::decode(&bytes),
+            Err(ProtocolError::FrameTooShort {
+                actual: 1,
+                minimum: HEADER_SIZE,
+            })
         );
     }
 }
