@@ -53,7 +53,7 @@ pub enum ProtocolError {
     /// The message-type byte is not assigned by this protocol version.
     UnknownMessageType(u8),
 
-    ///The payload cannot fit inside the configured maximum frame size
+    /// The payload cannot fit inside the configured maximum frame size.
     PayloadTooLarge { actual: usize, maximum: usize },
 }
 
@@ -94,6 +94,22 @@ impl Frame {
             counter,
             payload,
         })
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let payload_length =
+            u16::try_from(self.payload.len()).expect("validated payload length fits in u16");
+
+        let mut bytes = Vec::with_capacity(HEADER_SIZE + self.payload.len());
+
+        bytes.push(self.version);
+        bytes.push(self.message_type.as_u8());
+        bytes.extend_from_slice(&self.session_id.to_be_bytes());
+        bytes.extend_from_slice(&self.counter.to_be_bytes());
+        bytes.extend_from_slice(&payload_length.to_be_bytes());
+        bytes.extend_from_slice(&self.payload);
+
+        bytes
     }
 }
 
@@ -175,6 +191,28 @@ mod tests {
                 actual: MAX_PAYLOAD_SIZE + 1,
                 maximum: MAX_PAYLOAD_SIZE,
             })
+        );
+    }
+
+    #[test]
+    fn encodes_frame_in_network_byte_order() {
+        let frame = Frame::new(
+            MessageType::Data,
+            0x0102_0304,
+            0x0506_0708_090a_0b0c,
+            vec![0xde, 0xad],
+        )
+        .unwrap();
+
+        assert_eq!(
+            frame.encode(),
+            vec![
+                0x01, 0x01, // version and type
+                0x01, 0x02, 0x03, 0x04, // session ID
+                0x05, 0x06, 0x07, 0x08, // counter
+                0x09, 0x0a, 0x0b, 0x0c, 0x00, 0x02, // payload length
+                0xde, 0xad, // payload
+            ]
         );
     }
 }
