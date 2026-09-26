@@ -30,6 +30,16 @@ pub enum MessageType {
     Acknowledgment = 2,
 }
 
+/// One logical message exchanged between VPN peers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame {
+    version: u8,
+    message_type: MessageType,
+    session_id: u32,
+    counter: u64,
+    payload: Vec<u8>,
+}
+
 impl MessageType {
     /// Returns the stable byte value written into the frame header.
     pub const fn as_u8(self) -> u8 {
@@ -42,6 +52,9 @@ impl MessageType {
 pub enum ProtocolError {
     /// The message-type byte is not assigned by this protocol version.
     UnknownMessageType(u8),
+
+    ///The payload cannot fit inside the configured maximum frame size
+    PayloadTooLarge { actual: usize, maximum: usize },
 }
 
 impl fmt::Display for ProtocolError {
@@ -50,7 +63,37 @@ impl fmt::Display for ProtocolError {
             Self::UnknownMessageType(value) => {
                 write!(formatter, "unknown message type: {value}")
             }
+            Self::PayloadTooLarge { actual, maximum } => {
+                write!(
+                    formatter,
+                    "payload contains {actual} bytes, but the maximum is {maximum}"
+                )
+            }
         }
+    }
+}
+
+impl Frame {
+    pub fn new(
+        message_type: MessageType,
+        session_id: u32,
+        counter: u64,
+        payload: Vec<u8>,
+    ) -> Result<Self, ProtocolError> {
+        if payload.len() > MAX_PAYLOAD_SIZE {
+            return Err(ProtocolError::PayloadTooLarge {
+                actual: payload.len(),
+                maximum: MAX_PAYLOAD_SIZE,
+            });
+        }
+
+        Ok(Self {
+            version: PROTOCOL_VERSION,
+            message_type,
+            session_id,
+            counter,
+            payload,
+        })
     }
 }
 
@@ -73,7 +116,8 @@ impl TryFrom<u8> for MessageType {
 #[cfg(test)]
 mod tests {
     use super::{
-        HEADER_SIZE, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE, MessageType, PROTOCOL_VERSION, ProtocolError,
+        Frame, HEADER_SIZE, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE, MessageType, PROTOCOL_VERSION,
+        ProtocolError,
     };
 
     #[test]
@@ -107,6 +151,30 @@ mod tests {
         assert_eq!(
             MessageType::try_from(255),
             Err(ProtocolError::UnknownMessageType(255))
+        );
+    }
+
+    #[test]
+    fn creates_frame_with_maximum_payload() {
+        let payload = vec![0xaa; MAX_PAYLOAD_SIZE];
+
+        let result = Frame::new(MessageType::Data, 42, 1, payload);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_payload_larger_than_maximum() {
+        let payload = vec![0xaa; MAX_PAYLOAD_SIZE + 1];
+
+        let result = Frame::new(MessageType::Data, 42, 1, payload);
+
+        assert_eq!(
+            result,
+            Err(ProtocolError::PayloadTooLarge {
+                actual: MAX_PAYLOAD_SIZE + 1,
+                maximum: MAX_PAYLOAD_SIZE,
+            })
         );
     }
 }
