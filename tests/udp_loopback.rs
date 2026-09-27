@@ -12,7 +12,8 @@ use rust_vpn::{
 };
 
 const SESSION_ID: u32 = 42;
-const PACKET_COUNTER: u64 = 7;
+const FIRST_PACKET_COUNTER: u64 = 1;
+const LAST_PACKET_COUNTER: u64 = 3;
 
 #[test]
 fn transfers_data_frame_and_returns_acknowledgment_frame() -> Result<(), Box<dyn std::error::Error>>
@@ -32,50 +33,57 @@ fn transfers_data_frame_and_returns_acknowledgment_frame() -> Result<(), Box<dyn
     client.connect(server_address)?;
 
     let expected_payload = vec![0x00, 0x01, 0xff, 0x48, 0x69];
-    let data_frame = Frame::new(
-        MessageType::Data,
-        SESSION_ID,
-        PACKET_COUNTER,
-        expected_payload.clone(),
-    )?;
-    let encoded_data_frame = data_frame.encode();
-
-    let sent_length = client.send(&encoded_data_frame)?;
-    assert_eq!(sent_length, encoded_data_frame.len());
 
     let mut server_buffer = [0_u8; RECEIVE_BUFFER_SIZE];
-    let (received_length, sender_address) = server.recv_from(&mut server_buffer)?;
-
-    assert_eq!(sender_address, client_address);
-
-    let received_frame = Frame::decode(&server_buffer[..received_length])?;
-
-    assert_eq!(received_frame.message_type(), MessageType::Data);
-    assert_eq!(received_frame.session_id(), SESSION_ID);
-    assert_eq!(received_frame.counter(), PACKET_COUNTER);
-    assert_eq!(received_frame.payload(), expected_payload.as_slice());
-
-    // Echoing the identifiers tells the client exactly which data frame is
-    // being acknowledged without copying its payload into the response.
-    let acknowledgment = received_frame
-        .acknowledgment()
-        .expect("a data frame must produce an acknowledgment");
-    let encoded_acknowledgment = acknowledgment.encode();
-
-    let acknowledgment_length = server.send_to(&encoded_acknowledgment, sender_address)?;
-    assert_eq!(acknowledgment_length, encoded_acknowledgment.len());
-
     let mut client_buffer = [0_u8; RECEIVE_BUFFER_SIZE];
-    let received_acknowledgment_length = client.recv(&mut client_buffer)?;
-    let received_acknowledgment = Frame::decode(&client_buffer[..received_acknowledgment_length])?;
 
-    assert_eq!(
-        received_acknowledgment.message_type(),
-        MessageType::Acknowledgment
-    );
-    assert_eq!(received_acknowledgment.session_id(), SESSION_ID);
-    assert_eq!(received_acknowledgment.counter(), PACKET_COUNTER);
-    assert!(received_acknowledgment.payload().is_empty());
+    for counter in FIRST_PACKET_COUNTER..=LAST_PACKET_COUNTER {
+        let data_frame = Frame::new(
+            MessageType::Data,
+            SESSION_ID,
+            counter,
+            expected_payload.clone(),
+        )?;
+
+        let encoded_data_frame = data_frame.encode();
+
+        let sent_length = client.send(&encoded_data_frame)?;
+        assert_eq!(sent_length, encoded_data_frame.len());
+
+        let (received_length, sender_address) = server.recv_from(&mut server_buffer)?;
+
+        assert_eq!(sender_address, client_address);
+
+        let received_frame = Frame::decode(&server_buffer[..received_length])?;
+
+        assert_eq!(received_frame.message_type(), MessageType::Data);
+        assert_eq!(received_frame.session_id(), SESSION_ID);
+        assert_eq!(received_frame.counter(), counter);
+        assert_eq!(received_frame.payload(), expected_payload.as_slice());
+
+        let acknowledgment = received_frame
+            .acknowledgment()
+            .expect("a data frame must produce an acknowledgment");
+
+        let encoded_acknowledgment = acknowledgment.encode();
+
+        let acknowledgment_length = server.send_to(&encoded_acknowledgment, sender_address)?;
+
+        assert_eq!(acknowledgment_length, encoded_acknowledgment.len());
+
+        let received_acknowledgment_length = client.recv(&mut client_buffer)?;
+
+        let received_acknowledgment =
+            Frame::decode(&client_buffer[..received_acknowledgment_length])?;
+
+        assert_eq!(
+            received_acknowledgment.message_type(),
+            MessageType::Acknowledgment
+        );
+        assert_eq!(received_acknowledgment.session_id(), SESSION_ID);
+        assert_eq!(received_acknowledgment.counter(), counter);
+        assert!(received_acknowledgment.payload().is_empty());
+    }
 
     Ok(())
 }

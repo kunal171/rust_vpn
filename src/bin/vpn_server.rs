@@ -49,14 +49,13 @@ fn main() -> io::Result<()> {
         };
 
         println!(
-            "Decoded frame: version={}, type={:?}, session={}, counter={}",
-            frame.version(),
+            "direction=receive peer={sender_address} type={:?} \
+            session={} counter={} payload_length={} frame_length={received_length}",
             frame.message_type(),
             frame.session_id(),
             frame.counter(),
+            frame.payload().len(),
         );
-
-        println!("Payload bytes: {:?}", frame.payload());
 
         // The socket is not connected, so reply explicitly to the address that
         // arrived with this datagram. This lets one socket serve many clients.
@@ -72,6 +71,14 @@ fn main() -> io::Result<()> {
             ));
         }
 
-        println!("Sent {acknowledgment_length}-byte acknowledgment to {sender_address}");
+        println!(
+            "direction=send peer={sender_address} type={:?} \
+            session={} counter={} payload_length={} \
+            frame_length={acknowledgment_length}",
+            acknowledgment.message_type(),
+            acknowledgment.session_id(),
+            acknowledgment.counter(),
+            acknowledgment.payload().len(),
+        );
     }
 }

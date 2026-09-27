@@ -6,7 +6,7 @@ This project exists to learn networking, Linux packet handling, and Rust systems
 
 ## Current status
 
-Phase 2: binary packet framing complete.
+Phase 3: packet-capture verification complete.
 
 Currently implemented:
 
@@ -21,12 +21,15 @@ Currently implemented:
 - Client receive timeout and acknowledgment validation
 - Unit tests for valid and malformed frames
 - Real-socket framed UDP integration test
+- Three stop-and-wait Data/ACK exchanges with counters `1` through `3`
+- Structured frame metadata logs for capture correlation
+- Reproducible tcpdump procedure and packet-level evidence
 
 Not yet implemented:
 
-- Packet-capture verification with tcpdump or Wireshark
+- Linux network namespaces
 - TUN interfaces
-- Linux namespaces, routing, or NAT
+- Routing or NAT
 - Encryption or authentication
 
 ## Project structure
@@ -41,19 +44,23 @@ src/
     └── vpn_server.rs
 tests/
 └── udp_loopback.rs
+docs/
+└── phase3-packet-capture.md
 ```
 
 - `protocol.rs` defines the frame format, encoding, decoding, and validation.
 - `transport.rs` contains shared UDP configuration.
 - `vpn_client.rs` sends data frames and validates acknowledgment frames.
 - `vpn_server.rs` validates data frames and returns acknowledgment frames.
-- `udp_loopback.rs` verifies a framed exchange over real UDP sockets.
+- `udp_loopback.rs` verifies framed exchanges over real UDP sockets.
+- `phase3-packet-capture.md` documents the verified packet path and capture workflow.
 
 ## Requirements
 
 - Linux
 - Stable Rust toolchain
 - Cargo
+- tcpdump for packet-capture verification
 
 ## Build
 
@@ -69,7 +76,9 @@ cargo run --bin vpn_server
 cargo run --bin vpn_client
 ```
 
-The client encodes a five-byte binary payload inside a 21-byte data frame and sends it to `127.0.0.1:51820`. The server validates and decodes the frame, then returns a 16-byte acknowledgment frame containing the same session ID and packet counter. The client validates that acknowledgment or exits after its receive timeout.
+The client sends three 21-byte Data frames with counters `1` through `3` to `127.0.0.1:51820`. The server validates each frame and returns a matching 16-byte acknowledgment. The client uses stop-and-wait ordering and validates each acknowledgment or exits after its receive timeout.
+
+See [Phase 3 packet-capture verification](docs/phase3-packet-capture.md) for the tcpdump workflow and byte-level evidence.
 
 ## Quality checks
 
@@ -82,13 +91,14 @@ cargo test
 
 ## Next phase
 
-Phase 3 uses tcpdump and Wireshark to prove the packet path and inspect each encapsulation layer.
+Phase 4 builds a repeatable Linux network-namespace lab with virtual Ethernet pairs.
 
 Planned work:
 
-- Capture the loopback exchange with tcpdump.
-- Inspect Ethernet or loopback framing, IPv4, UDP, and the application frame.
-- Locate the protocol version, message type, session ID, counter, payload length, and payload in captured bytes.
-- Improve packet-counter and frame logging where captures show it is useful.
+- Create isolated client and server network namespaces.
+- Connect them with a virtual Ethernet (`veth`) pair.
+- Configure interfaces and IPv4 addresses with `ip link` and `ip addr`.
+- Inspect routes and neighbor entries with `ip route` and `ip neigh`.
+- Provide repeatable setup and cleanup commands.
 
-Success criterion: packet captures clearly demonstrate the complete client-to-server data frame and server-to-client acknowledgment frame.
+Success criterion: multiple isolated virtual network stacks communicate on one Linux host through a documented, repeatable lab.
