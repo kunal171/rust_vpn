@@ -6,10 +6,11 @@
 use rust_vpn::{
     AppRole,
     protocol::{Frame, MessageType},
-    transport::{CLIENT_BIND_ADDRESS, CLIENT_READ_TIMEOUT, SERVER_ADDRESS},
+    transport::{CLIENT_READ_TIMEOUT, DEFAULT_CLIENT_BIND_ADDRESS, DEFAULT_SERVER_ADDRESS},
 };
 use std::io;
 use std::net::UdpSocket;
+use std::{env, net::SocketAddr};
 
 // Values such as `0x00` and `0xff` demonstrate that a UDP payload is arbitrary
 // bytes; it does not have to be valid UTF-8 text.
@@ -22,11 +23,23 @@ const LAST_PACKET_COUNTER: u64 = 3;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Binding to port 0 lets the OS assign an available ephemeral client port.
-    let socket = UdpSocket::bind(CLIENT_BIND_ADDRESS)?;
+    let mut arguments = env::args().skip(1);
+
+    let server_address: SocketAddr = arguments
+        .next()
+        .unwrap_or_else(|| DEFAULT_SERVER_ADDRESS.to_owned())
+        .parse()?;
+
+    let client_bind_address: SocketAddr = arguments
+        .next()
+        .unwrap_or_else(|| DEFAULT_CLIENT_BIND_ADDRESS.to_owned())
+        .parse()?;
+
+    let socket = UdpSocket::bind(client_bind_address)?;
 
     // UDP `connect` performs no handshake. It records one default peer so this
     // socket can use `send`/`recv` and accept datagrams from only that peer.
-    socket.connect(SERVER_ADDRESS)?;
+    socket.connect(server_address)?;
     // Bound the blocking receive so a missing UDP reply cannot hang forever.
     socket.set_read_timeout(Some(CLIENT_READ_TIMEOUT))?;
 
@@ -54,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         println!(
-            "direction=send peer={SERVER_ADDRESS} type={:?} \
+            "direction=send peer={server_address} type={:?} \
             session={SESSION_ID} counter={counter} \
             payload_length={} frame_length={sent_length}",
             MessageType::Data,
@@ -78,7 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         println!(
-            "direction=receive peer={SERVER_ADDRESS} type={:?} \
+            "direction=receive peer={server_address} type={:?} \
             session={} counter={} payload_length={} \
             frame_length={acknowledgment_length}",
             acknowledgment.message_type(),

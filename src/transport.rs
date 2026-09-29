@@ -8,9 +8,9 @@ use std::time::Duration;
 /// Binds the client to loopback and asks the OS to choose an available port.
 ///
 /// Port `0` is special when binding: it requests an ephemeral local port.
-pub const CLIENT_BIND_ADDRESS: &str = "127.0.0.1:0";
-/// Fixed loopback address on which the example server listens.
-pub const SERVER_ADDRESS: &str = "127.0.0.1:51820";
+pub const DEFAULT_CLIENT_BIND_ADDRESS: &str = "127.0.0.1:0";
+/// Default loopback address on which the example server listens.
+pub const DEFAULT_SERVER_ADDRESS: &str = "127.0.0.1:51820";
 /// Maximum number of bytes this application reads from one UDP datagram.
 ///
 /// This matches the protocol maximum frame size. A larger datagram may be

@@ -6,13 +6,20 @@
 use rust_vpn::{
     AppRole,
     protocol::Frame,
-    transport::{RECEIVE_BUFFER_SIZE, SERVER_ADDRESS},
+    transport::{DEFAULT_SERVER_ADDRESS, RECEIVE_BUFFER_SIZE},
 };
 use std::io;
 use std::net::UdpSocket;
+use std::{env, net::SocketAddr};
 
-fn main() -> io::Result<()> {
-    let socket = UdpSocket::bind(SERVER_ADDRESS)?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bind_address = env::args()
+        .nth(1)
+        .unwrap_or_else(|| DEFAULT_SERVER_ADDRESS.to_owned());
+
+    let bind_address: SocketAddr = bind_address.parse()?;
+
+    let socket = UdpSocket::bind(bind_address)?;
 
     println!(
         "VPN {} listening on {}",
@@ -65,10 +72,10 @@ fn main() -> io::Result<()> {
         let acknowledgment_length = socket.send_to(&encoded_acknowledgment, sender_address)?;
 
         if acknowledgment_length != encoded_acknowledgment.len() {
-            return Err(io::Error::new(
+            return Err(Box::new(io::Error::new(
                 io::ErrorKind::WriteZero,
                 "UDP acknowledgment frame was not completely sent",
-            ));
+            )));
         }
 
         println!(
