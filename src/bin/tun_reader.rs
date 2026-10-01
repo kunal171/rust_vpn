@@ -1,12 +1,20 @@
-//! Creates a temporary Linux TUN interface and reads one IP packet.
+//! Creates a temporary Linux TUN interface and answers pings sent through it.
 //!
-//! This is a Phase 5 diagnostic binary. It does not yet forward,
-//! encrypt, or transport the captured packet.
-use rust_vpn::ipv4::decode_ipv4_header;
-use std::io::Read;
+//! Reading from the device returns packets the kernel routed out through the
+//! interface. Writing to it injects a packet as if it had arrived from the
+//! network. This binary reads each packet, prints its IPv4 header, and writes
+//! back an echo reply when the packet is an ICMP echo request.
+//!
+//! This is a Phase 5 diagnostic binary. It does not yet forward, encrypt, or
+//! transport packets over UDP. It runs until interrupted, and the interface
+//! disappears when the process exits.
+use rust_vpn::ipv4::{decode_ipv4_header, icmp_echo_reply};
+use std::io::{Read, Write};
 use tun::{Configuration, Layer};
 
 const TUN_NAME: &str = "rvpn0";
+// The host owns this address, so the kernel answers pings to it directly.
+// Ping any other address in the /24, such as 10.210.0.2, to reach this program.
 const TUN_ADDRESS: &str = "10.210.0.1";
 const TUN_NETMASK: &str = "255.255.255.0";
 
@@ -26,11 +34,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut device = tun::create(&configuration)?;
     println!("Created {TUN_NAME} with address {TUN_ADDRESS}/24");
-    println!("Waiting for one IP packet...");
+    println!("Waiting for IP packets; press Ctrl+C to stop...");
 
     let mut buffer = vec![0_u8; PACKET_BUFFER_SIZE];
 
     loop {
+        // Layer 3 mode delivers exactly one whole IP packet per read.
         let packet_length = device.read(&mut buffer)?;
         let packet = &buffer[..packet_length];
 
@@ -54,13 +63,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         header.ttl(),
                         header.protocol(),
                     );
-                    break;
+                    // Anything that is not an echo request is reported and
+                    // dropped; only pings are answered in this phase.
+                    match icmp_echo_reply(packet) {
+                        Ok(reply) => {
+                            device.write_all(&reply)?;
+                            println!("Sent echo reply to {}", header.source());
+                        }
+                        Err(error) => {
+                            eprintln!("Not replying: {error}");
+                        }
+                    }
                 }
                 Err(error) => {
                     eprintln!("Ignoring IPv4 packet: {error}");
                     continue;
                 }
             },
+            // The kernel sends IPv6 housekeeping traffic on every new interface.
             6 => {
                 println!("Ignoring IPv6 packet: {packet_length} bytes");
             }
@@ -72,6 +92,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-
-    Ok(())
 }
