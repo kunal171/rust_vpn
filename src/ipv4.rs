@@ -130,11 +130,6 @@ pub fn decode_ipv4_header(packet: &[u8]) -> Result<Ipv4Header, Ipv4Error> {
 
     let destination = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
 
-    println!(
-        "IPv4 source={source} destination={destination} \
-        header_length={header_length} total_length={total_length} \
-        ttl={ttl} protocol={protocol}"
-    );
 
     Ok(Ipv4Header {
         source: source,
