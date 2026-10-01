@@ -4,46 +4,33 @@ An educational, WireGuard-inspired VPN built incrementally in Rust on Linux.
 
 This project exists to learn networking, Linux packet handling, and Rust systems programming. It is not production-ready and must not be treated as a secure VPN.
 
-## Current status
+## Status
 
-Phase 4: Linux network-namespace lab complete.
+Phase 5 is complete: reading and writing IP packets through a Linux TUN interface.
 
-Currently implemented:
+Working foundations:
 
-- Separate UDP client and server binaries over IPv4 loopback
-- Arbitrary binary payload transfer
-- Versioned binary frames with message type, session ID, packet counter, payload length, and payload
-- Explicit big-endian encoding for multi-byte header fields
-- Strict decoding with bounds and length validation
-- Rejection of unknown versions, unknown message types, truncated frames, oversized frames, and length mismatches
-- Framed data and acknowledgment messages
-- Server-side protection against acknowledgment loops
-- Client receive timeout and acknowledgment validation
-- Unit tests for valid and malformed frames
-- Real-socket framed UDP integration test
-- Three stop-and-wait Data/ACK exchanges with counters `1` through `3`
-- Structured frame metadata logs for capture correlation
-- Reproducible tcpdump procedure and packet-level evidence
-- Configurable client bind and server endpoint addresses
-- Direct namespace topology using one virtual Ethernet (`veth`) pair
-- Bridged namespace topology using two veth pairs and a Linux bridge
-- Repeatable namespace setup, inspection, and cleanup scripts
-- Verified ICMP and framed UDP communication across both topologies
+- Configurable UDP client and server
+- Versioned binary Data/Acknowledgment frames with strict validation
+- Stop-and-wait exchanges with session IDs and packet counters
+- Unit and real-socket integration tests
+- Packet-capture verification with `tcpdump`
+- Repeatable direct-veth and Linux-bridge namespace labs
+- IPv4 header decoding, Internet checksum, and ICMP echo replies
+- A TUN interface that answers `ping` from user space
 
-Not yet implemented:
+Not implemented yet: carrying TUN packets over the UDP transport, routing/NAT, encryption, or authentication.
 
-- TUN interfaces
-- Routing or NAT
-- Encryption or authentication
-
-## Project structure
+## Layout
 
 ```text
 src/
 ├── lib.rs
+├── ipv4.rs
 ├── protocol.rs
 ├── transport.rs
 └── bin/
+    ├── tun_reader.rs
     ├── vpn_client.rs
     └── vpn_server.rs
 tests/
@@ -56,43 +43,38 @@ scripts/
 └── netns-bridge.sh
 ```
 
-- `protocol.rs` defines the frame format, encoding, decoding, and validation.
-- `transport.rs` contains shared UDP configuration.
-- `vpn_client.rs` sends data frames and validates acknowledgment frames.
-- `vpn_server.rs` validates data frames and returns acknowledgment frames.
-- `udp_loopback.rs` verifies framed exchanges over real UDP sockets.
-- `phase3-packet-capture.md` documents the verified packet path and capture workflow.
-- `phase4-linux-namespaces.md` documents both isolated network labs.
-- `netns-direct.sh` connects two namespaces with one veth pair.
-- `netns-bridge.sh` connects two namespaces through a Linux bridge.
+## Quick start
 
-## Requirements
-
-- Linux
-- Stable Rust toolchain
-- Cargo
-- iproute2 (`ip` and `bridge`)
-- tcpdump for packet-capture verification
-
-## Build
+Requirements: Linux, stable Rust, Cargo, iproute2, and optionally `tcpdump`.
 
 ```bash
 cargo build
-```
-
-## Run
-
-```bash
 cargo run --bin vpn_server
 # In a second terminal:
 cargo run --bin vpn_client
 ```
 
-The client sends three 21-byte Data frames with counters `1` through `3` to `127.0.0.1:51820`. The server validates each frame and returns a matching 16-byte acknowledgment. The client uses stop-and-wait ordering and validates each acknowledgment or exits after its receive timeout.
+The default loopback exchange sends three Data frames and validates their matching acknowledgments. Both binaries also accept configurable addresses for namespace testing.
 
-See [Phase 3 packet-capture verification](docs/phase3-packet-capture.md) for the tcpdump workflow and byte-level evidence.
+## TUN ping demo
 
-See [Phase 4 Linux namespaces](docs/phase4-linux-namespaces.md) to run the client and server in isolated network stacks.
+Creating a TUN interface needs root, so build as your user and run the binary with `sudo`:
+
+```bash
+cargo build
+sudo ./target/debug/tun_reader
+# In a second terminal:
+ping -c 3 10.210.0.2
+```
+
+`tun_reader` creates `rvpn0` with address `10.210.0.1/24`, prints the IPv4 header of each packet it reads, and answers ICMP echo requests. Ping `10.210.0.2` rather than `10.210.0.1`: the host owns `.1`, so the kernel answers that address itself and the packet never reaches the program. Stop it with Ctrl+C; the interface is removed when the process exits.
+
+## Labs and documentation
+
+- [Phase 3: packet-capture verification](docs/phase3-packet-capture.md)
+- [Phase 4: Linux namespaces](docs/phase4-linux-namespaces.md)
+- `scripts/netns-direct.sh`: direct veth topology
+- `scripts/netns-bridge.sh`: bridged topology
 
 ## Quality checks
 
@@ -103,15 +85,8 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-## Next phase
+## Roadmap
 
-Phase 5 introduces Linux TUN interfaces so the programs can read and write IP packets rather than only application-created payloads.
-
-Planned work:
-
-- Learn the difference between TUN and TAP devices.
-- Create and configure a TUN interface on Linux.
-- Read raw IP packets from the TUN file descriptor.
-- Inspect packet headers before connecting TUN traffic to the UDP transport.
-
-Success criterion: the program can receive an IP packet injected through a TUN interface and explain its header fields.
+- Connect TUN packets to the UDP transport
+- Add routing and NAT
+- Add authenticated encryption and replay protection

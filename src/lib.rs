@@ -1,8 +1,10 @@
-//! Shared library code used by both VPN binaries.
+//! Shared library code used by the VPN binaries.
 //!
 //! Keeping shared types and constants in the library avoids duplicating them
-//! in `vpn_client` and `vpn_server` and lets integration tests import them.
+//! across the binaries and lets integration tests import them.
 
+/// IPv4 header decoding, the Internet checksum, and ICMP echo replies.
+pub mod ipv4;
 /// Binary frame definitions and validation for data received from the network.
 pub mod protocol;
 /// UDP addresses, buffer sizes, timeouts, and temporary transport constants.
