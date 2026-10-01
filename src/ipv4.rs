@@ -185,7 +185,7 @@ pub fn internet_checksum(bytes: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-fn icmp_echo_reply(packet: &[u8]) -> Result<Vec<u8>, Ipv4Error> {
+pub fn icmp_echo_reply(packet: &[u8]) -> Result<Vec<u8>, Ipv4Error> {
     let header = decode_ipv4_header(packet)?;
 
     if header.protocol() != ICMP_PROTOCOL {
