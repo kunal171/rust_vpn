@@ -258,7 +258,7 @@ impl Ipv4Header {
 mod tests {
     use std::net::Ipv4Addr;
 
-    use super::{Ipv4Error, MINIMUM_IPV4_HEADER_LENGTH, decode_ipv4_header};
+    use super::{Ipv4Error, MINIMUM_IPV4_HEADER_LENGTH, decode_ipv4_header, internet_checksum};
 
     /// A 20-byte IPv4 header: version 4, IHL 5, TTL 64, UDP, 10.210.0.1 → 10.210.0.2.
     fn valid_header() -> [u8; 20] {
@@ -418,6 +418,77 @@ mod tests {
     fn pads_an_odd_trailing_byte_with_zero() {
         // 0x01 is treated as the 16-bit word 0x0100; its complement is 0xfeff.
         assert_eq!(internet_checksum(&[0x01]), 0xfeff);
+    }
+
+    /// Echo request 10.210.0.1 → 10.210.0.2, id 0x1234, seq 1, no data.
+    fn echo_request() -> Vec<u8> {
+        vec![
+            0x45, 0x00, 0x00, 0x1c, 0x00, 0x01, 0x00, 0x00, 0x40, 0x01,
+            0x65, 0x3a, 0x0a, 0xd2, 0x00, 0x01, 0x0a, 0xd2, 0x00, 0x02,
+            0x08, 0x00, 0xe5, 0xca, 0x12, 0x34, 0x00, 0x01,
+        ]
+    }
+
+    #[test]
+    fn builds_an_echo_reply_from_an_echo_request() {
+        let reply = icmp_echo_reply(&echo_request()).unwrap();
+
+        assert_eq!(
+            reply,
+            vec![
+                0x45, 0x00, 0x00, 0x1c, 0x00, 0x01, 0x00, 0x00, 0x40, 0x01,
+                0x65, 0x3a, 0x0a, 0xd2, 0x00, 0x02, 0x0a, 0xd2, 0x00, 0x01,
+                0x00, 0x00, 0xed, 0xca, 0x12, 0x34, 0x00, 0x01,
+            ]
+        );
+    }
+
+    #[test]
+    fn echo_reply_checksums_verify_to_zero() {
+        let reply = icmp_echo_reply(&echo_request()).unwrap();
+
+        assert_eq!(internet_checksum(&reply[..20]), 0);
+        assert_eq!(internet_checksum(&reply[20..]), 0);
+    }
+
+    #[test]
+    fn rejects_a_packet_that_is_not_icmp() {
+        let mut packet = echo_request();
+        packet[9] = 17;
+
+        assert_eq!(
+            icmp_echo_reply(&packet),
+            Err(Ipv4Error::UnexpectedProtocol { protocol: 17 })
+        );
+    }
+
+    #[test]
+    fn rejects_an_icmp_message_shorter_than_its_header() {
+        let mut packet = echo_request();
+        // Claim only 4 ICMP bytes: total length 24 instead of 28.
+        packet[2..4].copy_from_slice(&24_u16.to_be_bytes());
+
+        assert_eq!(
+            icmp_echo_reply(&packet),
+            Err(Ipv4Error::TruncatedIcmp {
+                actual: 4,
+                minimum: 8,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_an_icmp_message_that_is_not_an_echo_request() {
+        let mut packet = echo_request();
+        packet[20] = 0;
+
+        assert_eq!(
+            icmp_echo_reply(&packet),
+            Err(Ipv4Error::NotEchoRequest {
+                icmp_type: 0,
+                code: 0,
+            })
+        );
     }
 
 }
