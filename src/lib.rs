@@ -3,11 +3,11 @@
 //! Keeping shared types and constants in the library avoids duplicating them
 //! in `vpn_client` and `vpn_server` and lets integration tests import them.
 
+pub mod ipv4;
 /// Binary frame definitions and validation for data received from the network.
 pub mod protocol;
 /// UDP addresses, buffer sizes, timeouts, and temporary transport constants.
 pub mod transport;
-pub mod ipv4;
 
 /// Identifies which side of the client-server example is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

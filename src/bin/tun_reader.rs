@@ -2,11 +2,9 @@
 //!
 //! This is a Phase 5 diagnostic binary. It does not yet forward,
 //! encrypt, or transport the captured packet.
+use rust_vpn::ipv4::decode_ipv4_header;
 use std::io::Read;
 use tun::{Configuration, Layer};
-use rust_vpn::{
-    ipv4::decode_ipv4_header
-};
 
 const TUN_NAME: &str = "rvpn0";
 const TUN_ADDRESS: &str = "10.210.0.1";
@@ -45,27 +43,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let version = first_byte >> 4;
 
         match version {
-            4 => {
-
-                match decode_ipv4_header(packet) {
-                    Ok(header) => {
-                        println!(
-                            "IPv4 source={} destination={} header_length={} total_length={} ttl={} protocol={}",
-                            header.source(),
-                            header.destination(),
-                            header.header_length(),
-                            header.total_length(),
-                            header.ttl(),
-                            header.protocol(),
-                        );
-                        break;
-                    }
-                    Err(error) => {
-                        eprintln!("Ignoring IPv4 packet: {error}");
-                        continue;
-                    }
+            4 => match decode_ipv4_header(packet) {
+                Ok(header) => {
+                    println!(
+                        "IPv4 source={} destination={} header_length={} total_length={} ttl={} protocol={}",
+                        header.source(),
+                        header.destination(),
+                        header.header_length(),
+                        header.total_length(),
+                        header.ttl(),
+                        header.protocol(),
+                    );
+                    break;
                 }
-            }
+                Err(error) => {
+                    eprintln!("Ignoring IPv4 packet: {error}");
+                    continue;
+                }
+            },
             6 => {
                 println!("Ignoring IPv6 packet: {packet_length} bytes");
             }
