@@ -7,6 +7,7 @@
 pub mod protocol;
 /// UDP addresses, buffer sizes, timeouts, and temporary transport constants.
 pub mod transport;
+pub mod ipv4;
 
 /// Identifies which side of the client-server example is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

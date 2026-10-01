@@ -3,8 +3,10 @@
 //! This is a Phase 5 diagnostic binary. It does not yet forward,
 //! encrypt, or transport the captured packet.
 use std::io::Read;
-use std::net::Ipv4Addr;
 use tun::{Configuration, Layer};
+use rust_vpn::{
+    ipv4::decode_ipv4_header
+};
 
 const TUN_NAME: &str = "rvpn0";
 const TUN_ADDRESS: &str = "10.210.0.1";
@@ -44,46 +46,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match version {
             4 => {
-                const MINIMUM_IPV4_HEADER_LENGTH: usize = 20;
-                if packet.len() < MINIMUM_IPV4_HEADER_LENGTH {
-                    eprintln!("Ignoring truncated IPv4 packet");
-                    continue;
+
+                match decode_ipv4_header(packet) {
+                    Ok(header) => {
+                        println!(
+                            "IPv4 source={} destination={} header_length={} total_length={} ttl={} protocol={}",
+                            header.source(),
+                            header.destination(),
+                            header.header_length(),
+                            header.total_length(),
+                            header.ttl(),
+                            header.protocol(),
+                        );
+                        break;
+                    }
+                    Err(error) => {
+                        eprintln!("Ignoring IPv4 packet: {error}");
+                        continue;
+                    }
                 }
-
-                let ihl_words = packet[0] & 0x0f;
-
-                let header_length = usize::from(ihl_words) * 4;
-
-                if header_length < MINIMUM_IPV4_HEADER_LENGTH {
-                    eprintln!("Ignoring IPv4 packet with invalid header length");
-                    continue;
-                }
-
-                if packet.len() < header_length {
-                    eprintln!("Ignoring truncated IPv4 header");
-                    continue;
-                }
-
-                let total_length = usize::from(u16::from_be_bytes([packet[2], packet[3]]));
-
-                if total_length < header_length || total_length > packet.len() {
-                    eprintln!("Ignoring IPv4 packet with invalid total length");
-                    continue;
-                }
-
-                let ttl = packet[8];
-                let protocol = packet[9];
-
-                let source = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
-
-                let destination = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
-
-                println!(
-                    "IPv4 source={source} destination={destination} \
-                    header_length={header_length} total_length={total_length} \
-                    ttl={ttl} protocol={protocol}"
-                );
-                break;
             }
             6 => {
                 println!("Ignoring IPv6 packet: {packet_length} bytes");
