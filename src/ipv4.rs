@@ -1,6 +1,10 @@
 use std::fmt;
 use std::net::Ipv4Addr;
 const MINIMUM_IPV4_HEADER_LENGTH: usize = 20;
+const ICMP_PROTOCOL: u8 = 1;
+const ICMP_HEADER_LENGTH: usize = 8;
+const ICMP_ECHO_REQUEST: u8 = 8;
+const ICMP_ECHO_REPLY: u8 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ipv4Header {
@@ -34,6 +38,9 @@ pub enum Ipv4Error {
     UnsupportedVersion {
         version: u8,
     },
+    UnexpectedProtocol { protocol: u8 },
+    TruncatedIcmp { actual: usize, minimum: usize },
+    NotEchoRequest { icmp_type: u8, code: u8 },
 }
 
 impl fmt::Display for Ipv4Error {
@@ -76,6 +83,28 @@ impl fmt::Display for Ipv4Error {
             Self::UnsupportedVersion { version } => {
                 write!(formatter, "unsupported IP version {version}")
             }
+            Self::UnexpectedProtocol {protocol} => {
+                 write!(formatter, "unsupported Protocol version {protocol}")
+            }
+            Self::TruncatedIcmp{
+                actual,
+                minimum
+            } => {
+                write!(
+                    formatter,
+                    "ICMP Message length {actual} is below {minimum}"
+                )
+            }
+            Self::NotEchoRequest{
+                icmp_type,
+                code,
+            } => {
+                write!(
+                    formatter,
+                    "ICMP Type {icmp_type} is not an Echo Request has code {code}"
+                )
+            }
+           
         }
     }
 }
@@ -140,6 +169,72 @@ pub fn decode_ipv4_header(packet: &[u8]) -> Result<Ipv4Header, Ipv4Error> {
         protocol: protocol,
     })
 }
+
+pub fn internet_checksum(bytes: &[u8]) -> u16 {
+    let mut sum: u32 = 0;
+    let mut chunks = bytes.chunks_exact(2);
+    for chunk in chunks.by_ref() {
+        sum += u32::from(u16::from_be_bytes([chunk[0], chunk[1]]));
+    }
+    if let Some(&last) = chunks.remainder().first() {
+        sum += u32::from(last) << 8;
+    }
+    while sum > 0xffff {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn icmp_echo_reply(packet: &[u8]) -> Result<Vec<u8>, Ipv4Error> {
+    let header = decode_ipv4_header(packet)?;
+
+    if header.protocol() != ICMP_PROTOCOL {
+        return Err(Ipv4Error::UnexpectedProtocol {
+            protocol: header.protocol(),
+        });
+    }
+
+    let icmp_offset = header.header_length();
+    let icmp_end = header.total_length();
+    if icmp_end - icmp_offset < ICMP_HEADER_LENGTH {
+        return Err(Ipv4Error::TruncatedIcmp {
+            actual: icmp_end - icmp_offset,
+            minimum: ICMP_HEADER_LENGTH,
+        });
+    }
+
+    let icmp_type = packet[icmp_offset];
+    let icmp_code = packet[icmp_offset + 1];
+    if icmp_type != ICMP_ECHO_REQUEST || icmp_code != 0 {
+        return Err(Ipv4Error::NotEchoRequest {
+            icmp_type,
+            code: icmp_code,
+        });
+    }
+
+    let mut reply = packet[..icmp_end].to_vec();
+
+    for offset in 0..4 {
+        reply.swap(12 + offset, 16 + offset)
+    }
+
+    reply[icmp_offset] = ICMP_ECHO_REPLY;
+
+    reply[10] = 0;
+    reply[11] = 0;
+    let ip_checksum = internet_checksum(&reply[..icmp_offset]);
+
+    reply[10..12].copy_from_slice(&ip_checksum.to_be_bytes());
+
+    let checksum_offset = icmp_offset + 2;
+    reply[checksum_offset] = 0;
+    reply[checksum_offset + 1] = 0;
+    let icmp_checksum = internet_checksum(&reply[icmp_offset..icmp_end]);
+    reply[checksum_offset..checksum_offset + 2].copy_from_slice(&icmp_checksum.to_be_bytes());
+
+    Ok(reply)
+}
+
 
 impl Ipv4Header {
     pub fn source(&self) -> Ipv4Addr {
