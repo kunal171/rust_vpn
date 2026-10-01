@@ -38,9 +38,17 @@ pub enum Ipv4Error {
     UnsupportedVersion {
         version: u8,
     },
-    UnexpectedProtocol { protocol: u8 },
-    TruncatedIcmp { actual: usize, minimum: usize },
-    NotEchoRequest { icmp_type: u8, code: u8 },
+    UnexpectedProtocol {
+        protocol: u8,
+    },
+    TruncatedIcmp {
+        actual: usize,
+        minimum: usize,
+    },
+    NotEchoRequest {
+        icmp_type: u8,
+        code: u8,
+    },
 }
 
 impl fmt::Display for Ipv4Error {
@@ -83,28 +91,18 @@ impl fmt::Display for Ipv4Error {
             Self::UnsupportedVersion { version } => {
                 write!(formatter, "unsupported IP version {version}")
             }
-            Self::UnexpectedProtocol {protocol} => {
-                 write!(formatter, "unsupported Protocol version {protocol}")
+            Self::UnexpectedProtocol { protocol } => {
+                write!(formatter, "unsupported Protocol version {protocol}")
             }
-            Self::TruncatedIcmp{
-                actual,
-                minimum
-            } => {
-                write!(
-                    formatter,
-                    "ICMP Message length {actual} is below {minimum}"
-                )
+            Self::TruncatedIcmp { actual, minimum } => {
+                write!(formatter, "ICMP Message length {actual} is below {minimum}")
             }
-            Self::NotEchoRequest{
-                icmp_type,
-                code,
-            } => {
+            Self::NotEchoRequest { icmp_type, code } => {
                 write!(
                     formatter,
                     "ICMP Type {icmp_type} is not an Echo Request has code {code}"
                 )
             }
-           
         }
     }
 }
@@ -159,26 +157,26 @@ pub fn decode_ipv4_header(packet: &[u8]) -> Result<Ipv4Header, Ipv4Error> {
 
     let destination = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
 
-
     Ok(Ipv4Header {
-        source: source,
-        destination: destination,
+        source,
+        destination,
         header_length,
         total_length,
-        ttl: ttl,
-        protocol: protocol,
+        ttl,
+        protocol,
     })
 }
 
 pub fn internet_checksum(bytes: &[u8]) -> u16 {
     let mut sum: u32 = 0;
-    let mut chunks = bytes.chunks_exact(2);
-    for chunk in chunks.by_ref() {
-        sum += u32::from(u16::from_be_bytes([chunk[0], chunk[1]]));
+    let (pairs, remainder) = bytes.as_chunks::<2>();
+    for pair in pairs {
+        sum += u32::from(u16::from_be_bytes(*pair));
     }
-    if let Some(&last) = chunks.remainder().first() {
-        sum += u32::from(last) << 8;
+    if let [last] = remainder {
+        sum += u32::from(*last) << 8;
     }
+
     while sum > 0xffff {
         sum = (sum & 0xffff) + (sum >> 16);
     }
@@ -234,7 +232,6 @@ pub fn icmp_echo_reply(packet: &[u8]) -> Result<Vec<u8>, Ipv4Error> {
 
     Ok(reply)
 }
-
 
 impl Ipv4Header {
     pub fn source(&self) -> Ipv4Addr {
@@ -397,4 +394,30 @@ mod tests {
             })
         );
     }
+
+    /// A real 20-byte header with its checksum field (bytes 10..12) zeroed.
+    const HEADER_WITHOUT_CHECKSUM: [u8; 20] = [
+        0x45, 0x00, 0x00, 0x73, 0x00, 0x00, 0x40, 0x00, 0x40, 0x11,
+        0x00, 0x00, 0xc0, 0xa8, 0x00, 0x01, 0xc0, 0xa8, 0x00, 0xc7,
+    ];
+
+    #[test]
+    fn computes_the_checksum_of_a_known_header() {
+        assert_eq!(internet_checksum(&HEADER_WITHOUT_CHECKSUM), 0xb861);
+    }
+
+    #[test]
+    fn a_header_containing_its_checksum_sums_to_zero() {
+        let mut header = HEADER_WITHOUT_CHECKSUM;
+        header[10..12].copy_from_slice(&0xb861_u16.to_be_bytes());
+
+        assert_eq!(internet_checksum(&header), 0);
+    }
+
+    #[test]
+    fn pads_an_odd_trailing_byte_with_zero() {
+        // 0x01 is treated as the 16-bit word 0x0100; its complement is 0xfeff.
+        assert_eq!(internet_checksum(&[0x01]), 0xfeff);
+    }
+
 }
