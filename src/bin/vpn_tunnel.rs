@@ -1,6 +1,7 @@
 //! Connects a Linux TUN interface to a UDP peer.
-//!
 
+use rust_vpn::protocol::{Frame, MessageType};
+use std::io::Read;
 use std::env;
 use std::error::Error;
 use std::net::{
@@ -14,6 +15,14 @@ const TUN_NAME: &str = "rvpn0";
 const TUN_NETMASK: &str = "255.255.255.0";
 const USAGE: &str = "usage: vpn_tunnel <tun-address> <bind-address> <peer-address>\n\
     example: vpn_tunnel 10.210.0.1 10.200.1.1:51820 10.200.1.2:51820";
+
+/// Link MTU (1500) minus outer IPv4 (20), UDP (8), and frame header (16),
+/// so an encapsulated packet still fits in one link-sized datagram.
+const TUN_MTU: u16 = 1456;
+const SESSION_ID: u32 = 1;
+// Same reasoning as tun_reader: the largest possible IPv4 packet.
+const PACKET_BUFFER_SIZE: usize = 65_535;
+
 
 /// Returns the next command-line argument, or an error that names it.
 fn required_argument(
@@ -38,9 +47,11 @@ fn main()-> Result<(), Box<dyn Error>> {
         .tun_name(TUN_NAME)
         .address(tun_address)
         .netmask(TUN_NETMASK)
+        .mtu(TUN_MTU)
         .layer(Layer::L3)
         .up();
-    let _device = tun::create(&configuration)?;
+
+    let mut device = tun::create(&configuration)?;
 
     let socket = UdpSocket::bind(bind_address)?;
     // As in vpn_client: no handshake, just a default peer for send/recv.
@@ -49,5 +60,32 @@ fn main()-> Result<(), Box<dyn Error>> {
     println!("Created {TUN_NAME} with address {tun_address}/24");
     println!("UDP bound to {} with peer {peer_address}", socket.local_addr()?);
 
-    Ok(())
+    let mut buffer = vec![0_u8; PACKET_BUFFER_SIZE];
+    let mut counter: u64 = 0;
+
+    loop {
+        let packet_length = device.read(&mut buffer)?;
+        let packet = &buffer[..packet_length];
+
+        counter +=1;
+
+        let frame = match Frame::new(MessageType::Data, SESSION_ID, counter, packet.to_vec()) {
+            Ok(frame) => frame,
+            Err(error) => {
+                eprintln!("Dropping TUN packet: {error}");
+                continue;
+            }
+        };
+
+        let encoded_frame = frame.encode();
+
+        // A missing peer must not stop the tunnel; drop the packet and go on.
+        match socket.send(&encoded_frame) {
+            Ok(sent_length) => println!(
+                "direction=send peer={peer_address} counter={counter} \
+                packet_length={packet_length} frame_length={sent_length}"
+            ),
+            Err(error) => eprintln!("Dropping packet {counter}: send failed: {error}"),
+        }
+    }
 }
