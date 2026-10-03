@@ -6,7 +6,7 @@ This project exists to learn networking, Linux packet handling, and Rust systems
 
 ## Status
 
-Phase 6 is in progress: carrying TUN packets between two peers over UDP.
+Phase 6 is complete: carrying TUN packets between two peers over UDP.
 
 Working foundations:
 
@@ -87,7 +87,7 @@ sudo ip netns exec rvpn-server ./target/debug/vpn_tunnel 10.210.0.2 10.200.1.2:5
 sudo ip netns exec rvpn-client ping -c 3 10.210.0.2
 ```
 
-The arguments are the TUN address, the local UDP bind address, and the peer's UDP address. The ping replies come from the kernel in `rvpn-server`, carried back through the tunnel. Remove the lab with `sudo ./scripts/netns-direct.sh down`. See [Phase 6](docs/phase6-tun-over-udp.md) for the design, the MTU calculation, and further checks.
+The arguments are the TUN address, the local UDP bind address, and the peer's UDP address. The ping replies come from the kernel in `rvpn-server`, carried back through the tunnel. Remove the lab with `sudo ./scripts/netns-direct.sh down`. See [Phase 6](docs/phase6-tun-over-udp.md) for the design, the MTU calculation, and the verification captures.
 
 ## Labs and documentation
 
