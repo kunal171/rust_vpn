@@ -60,7 +60,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     socket.connect(peer_address)?;
 
     println!("Created {TUN_NAME} with address {tun_address}/24");
-    println!("UDP bound to {} with peer {peer_address}", socket.local_addr()?);
+    println!(
+        "UDP bound to {} with peer {peer_address}",
+        socket.local_addr()?
+    );
 
     let (reader, writer) = device.split();
     let send_socket = socket.try_clone()?;
