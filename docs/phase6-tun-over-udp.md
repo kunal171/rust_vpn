@@ -46,8 +46,10 @@ Both peers name their interface `rvpn0`. That works because each namespace has i
 ## How `vpn_tunnel` works
 
 ```text
-vpn_tunnel <tun-address> <bind-address> <peer-address>
+vpn_tunnel <tun-address> <bind-address> <peer-address> <allowed-ips>
 ```
+
+The fourth argument was added in [Phase 7](phase7-routing-nat.md#allowed-ips). It lists the source addresses the peer may send from; in this lab each peer allows only the other's tunnel address.
 
 `read` on TUN and `recv` on UDP both block, so one loop cannot wait for both. The program runs one blocking loop per direction:
 
@@ -103,12 +105,12 @@ Start one peer in each namespace, in separate terminals:
 
 ```bash
 sudo ip netns exec rvpn-client \
-    ./target/debug/vpn_tunnel 10.210.0.1 10.200.1.1:51820 10.200.1.2:51820
+    ./target/debug/vpn_tunnel 10.210.0.1 10.200.1.1:51820 10.200.1.2:51820 10.210.0.2/32
 ```
 
 ```bash
 sudo ip netns exec rvpn-server \
-    ./target/debug/vpn_tunnel 10.210.0.2 10.200.1.2:51820 10.200.1.1:51820
+    ./target/debug/vpn_tunnel 10.210.0.2 10.200.1.2:51820 10.200.1.1:51820 10.210.0.1/32
 ```
 
 Ping the other peer's inner address:
