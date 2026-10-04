@@ -22,8 +22,11 @@ readonly SERVER_ADDR="10.200.3.2/24"
 readonly SERVER_LAN_ADDR="10.200.4.1/24"
 readonly LAN_ADDR="10.200.4.2/24"
 
+readonly LAN_SUBNET="10.200.4.0/24"
+readonly TUNNEL_SUBNET="10.210.0.0/24"
+
 usage() {
-    echo "Usage: sudo $0 {up|status|down}"
+    echo "Usage: sudo $0 {up|route|status|down}"
 }
 
 require_root() {
@@ -77,6 +80,23 @@ up() {
     echo "Routed namespace lab is ready."
 }
 
+# Routes the client's LAN traffic through the tunnel and back.
+# Run it after vpn_tunnel is running in both rvpnr-client and rvpnr-server.
+route() {
+    # The client route attaches to rvpn0, which exists only while vpn_tunnel runs.
+    if ! ip -n "${CLIENT_NS}" link show rvpn0 >/dev/null 2>&1; then
+        echo "rvpn0 does not exist in ${CLIENT_NS}; start vpn_tunnel there first." >&2
+        exit 1
+    fi
+
+    ip -n "${CLIENT_NS}" route add "${LAN_SUBNET}" dev rvpn0
+    # sysctl is not an `ip` command, so it needs `ip netns exec` instead of `ip -n`.
+    ip netns exec "${SERVER_NS}" sysctl -qw net.ipv4.ip_forward=1
+    ip -n "${LAN_NS}" route add "${TUNNEL_SUBNET}" via "${SERVER_LAN_ADDR%/*}"
+
+    echo "Routing configured. Test: sudo ip netns exec ${CLIENT_NS} ping -c 3 10.200.4.2"
+}
+
 status() {
     echo "Namespaces:"
     ip netns list | awk '{print $1}' | grep -E '^rvpnr-(client|server|lan)$' || true
@@ -105,6 +125,7 @@ require_root
 
 case "${1:-}" in
     up) up ;;
+    route) route ;;
     status) status ;;
     down) down ;;
     *)
