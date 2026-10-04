@@ -3,6 +3,8 @@
 //! Keeping shared types and constants in the library avoids duplicating them
 //! across the binaries and lets integration tests import them.
 
+/// IPv4 networks in CIDR notation, used as a peer's allowed source addresses.
+pub mod cidr;
 /// IPv4 header decoding, the Internet checksum, and ICMP echo replies.
 pub mod ipv4;
 /// Binary frame definitions and validation for data received from the network.
