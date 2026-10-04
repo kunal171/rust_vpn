@@ -26,7 +26,7 @@ readonly LAN_SUBNET="10.200.4.0/24"
 readonly TUNNEL_SUBNET="10.210.0.0/24"
 
 usage() {
-    echo "Usage: sudo $0 {up|route|status|down}"
+    echo "Usage: sudo $0 {up|route|nat|status|down}"
 }
 
 require_root() {
@@ -97,6 +97,27 @@ route() {
     echo "Routing configured. Test: sudo ip netns exec ${CLIENT_NS} ping -c 3 10.200.4.2"
 }
 
+# Replaces the LAN host's return route with NAT on the gateway, so the LAN
+# host can reply without knowing the tunnel network exists. Run it after `route`.
+nat() {
+    # Remove fix 3 so replies can only come back through NAT.
+    if [[ -n "$(ip -n "${LAN_NS}" route show "${TUNNEL_SUBNET}")" ]]; then
+        ip -n "${LAN_NS}" route del "${TUNNEL_SUBNET}"
+    fi
+
+    # Masquerade tunnel traffic leaving through the gateway's LAN interface.
+    ip netns exec "${SERVER_NS}" nft -f - <<EOF
+table ip rvpn_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr ${TUNNEL_SUBNET} oifname "${SERVER_LAN_IF}" masquerade
+    }
+}
+EOF
+
+    echo "NAT configured. ${LAN_NS} now sees tunnel traffic from ${SERVER_LAN_ADDR%/*}."
+}
+
 status() {
     echo "Namespaces:"
     ip netns list | awk '{print $1}' | grep -E '^rvpnr-(client|server|lan)$' || true
@@ -126,6 +147,7 @@ require_root
 case "${1:-}" in
     up) up ;;
     route) route ;;
+    nat) nat ;;
     status) status ;;
     down) down ;;
     *)
