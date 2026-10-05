@@ -5,6 +5,8 @@
 //! payloads into TUN. Both ends run this same program with mirrored
 //! arguments.
 
+use rust_vpn::cidr::{CidrError, Ipv4Cidr};
+use rust_vpn::ipv4::decode_ipv4_header;
 use rust_vpn::protocol::{Frame, MessageType};
 use rust_vpn::transport::RECEIVE_BUFFER_SIZE;
 use std::env;
@@ -16,8 +18,9 @@ use tun::{Configuration, Layer, Reader, Writer};
 
 const TUN_NAME: &str = "rvpn0";
 const TUN_NETMASK: &str = "255.255.255.0";
-const USAGE: &str = "usage: vpn_tunnel <tun-address> <bind-address> <peer-address>\n\
-    example: vpn_tunnel 10.210.0.1 10.200.1.1:51820 10.200.1.2:51820";
+
+const USAGE: &str = "usage: vpn_tunnel <tun-address> <bind-address> <peer-address> <allowed-ips>\n\
+    example: vpn_tunnel 10.210.0.1 10.200.1.1:51820 10.200.1.2:51820 10.210.0.2/32";
 
 /// Link MTU (1500) minus outer IPv4 (20), UDP (8), and frame header (16),
 /// so an encapsulated packet still fits in one link-sized datagram.
@@ -25,6 +28,11 @@ const TUN_MTU: u16 = 1456;
 const SESSION_ID: u32 = 1;
 // Same reasoning as tun_reader: the largest possible IPv4 packet.
 const PACKET_BUFFER_SIZE: usize = 65_535;
+
+/// Parses a comma-separated list such as `10.210.0.2/32,10.200.4.0/24`.
+fn parse_allowed_ips(text: &str) -> Result<Vec<Ipv4Cidr>, CidrError> {
+    text.split(',').map(str::parse).collect()
+}
 
 /// Returns the next command-line argument, or an error that names it.
 fn required_argument(
@@ -42,6 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tun_address: Ipv4Addr = required_argument(&mut arguments, "tun-address")?.parse()?;
     let bind_address: SocketAddr = required_argument(&mut arguments, "bind-address")?.parse()?;
     let peer_address: SocketAddr = required_argument(&mut arguments, "peer-address")?.parse()?;
+    let allowed_ips = parse_allowed_ips(&required_argument(&mut arguments, "allowed-ips")?)?;
 
     let mut configuration = Configuration::default();
 
@@ -65,6 +74,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         socket.local_addr()?
     );
 
+    let allowed_list: Vec<String> = allowed_ips.iter().map(ToString::to_string).collect();
+    println!("Accepting inner packets from {}", allowed_list.join(", "));
+
     let (reader, writer) = device.split();
     let send_socket = socket.try_clone()?;
 
@@ -76,7 +88,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    udp_to_tun(socket, writer)?;
+    udp_to_tun(socket, writer, &allowed_ips)?;
 
     Ok(())
 }
@@ -114,7 +126,7 @@ fn tun_to_udp(mut reader: Reader, socket: UdpSocket, peer_address: SocketAddr) -
 }
 
 /// Receives Data frames from the peer and writes their payloads into TUN.
-fn udp_to_tun(socket: UdpSocket, mut writer: Writer) -> io::Result<()> {
+fn udp_to_tun(socket: UdpSocket, mut writer: Writer, allowed_ips: &[Ipv4Cidr]) -> io::Result<()> {
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
 
     loop {
@@ -135,6 +147,24 @@ fn udp_to_tun(socket: UdpSocket, mut writer: Writer) -> io::Result<()> {
 
         if frame.message_type() != MessageType::Data {
             eprintln!("Ignoring unexpected {:?} frame", frame.message_type());
+            continue;
+        }
+
+        // The peer may only send from its allowed addresses; anything else
+        // would let it inject spoofed traffic into this side's network.
+        let source = match decode_ipv4_header(frame.payload()) {
+            Ok(header) => header.source(),
+            Err(error) => {
+                eprintln!("Dropping packet {}: {error}", frame.counter());
+                continue;
+            }
+        };
+
+        if !allowed_ips.iter().any(|network| network.contains(source)) {
+            eprintln!(
+                "Dropping packet {}: source {source} is not an allowed IP",
+                frame.counter()
+            );
             continue;
         }
 
