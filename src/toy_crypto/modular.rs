@@ -6,7 +6,7 @@
 /// Returns `(a * b) mod modulus` without overflowing.
 ///
 /// Panics if `modulus` is zero.
-pub fn mod_mul(a:u64, b : u64, modulus: u64) -> u64 {
+pub fn mod_mul(a: u64, b: u64, modulus: u64) -> u64 {
     // The product of two u64 values needs up to 128 bits. The remainder is
     // below `modulus`, so narrowing it back to u64 cannot lose anything.
     ((u128::from(a) * u128::from(b)) % u128::from(modulus)) as u64
@@ -72,7 +72,11 @@ mod tests {
     #[test]
     fn does_not_overflow_near_the_top_of_u64() {
         assert_eq!(
-            mod_mul(LARGEST_U64_PRIME - 1, LARGEST_U64_PRIME - 1, LARGEST_U64_PRIME),
+            mod_mul(
+                LARGEST_U64_PRIME - 1,
+                LARGEST_U64_PRIME - 1,
+                LARGEST_U64_PRIME
+            ),
             1
         );
         assert_eq!(mod_pow(2, LARGEST_U64_PRIME - 1, LARGEST_U64_PRIME), 1);
