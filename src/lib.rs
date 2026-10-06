@@ -11,7 +11,7 @@ pub mod ipv4;
 pub mod protocol;
 /// UDP addresses, buffer sizes, timeouts, and temporary transport constants.
 pub mod transport;
-
+/// Hand-written cryptographic math for learning. Never use it for real secrets.
 pub mod toy_crypto;
 
 /// Identifies which side of the client-server example is running.
