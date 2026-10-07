@@ -42,7 +42,7 @@ pub fn mod_pow(base: u64, exponent: u64, modulus: u64) -> u64 {
 /// Returns `None` when `value` is a multiple of `prime`, because zero has no
 /// inverse. `prime` must be prime; the result is meaningless otherwise.
 pub fn mod_inverse(value: u64, prime: u64) -> Option<u64> {
-    if value % prime == 0 {
+    if value.is_multiple_of(prime) {
         return None;
     }
 
@@ -74,10 +74,9 @@ pub fn is_generator(element: u64, prime: u64) -> bool {
     multiplicative_order(element, prime) == Some(prime - 1)
 }
 
-
 #[cfg(test)]
 mod tests {
-    use super::{mod_mul, mod_pow};
+    use super::{is_generator, mod_inverse, mod_mul, mod_pow, multiplicative_order};
 
     /// 2^64 - 59, the largest prime that fits in a u64.
     const LARGEST_U64_PRIME: u64 = 18_446_744_073_709_551_557;
@@ -120,7 +119,7 @@ mod tests {
         assert_eq!(mod_pow(2, LARGEST_U64_PRIME - 1, LARGEST_U64_PRIME), 1);
     }
 
-        #[test]
+    #[test]
     fn finds_the_inverse_in_the_worked_example() {
         // 3 * 5 = 15, and 15 mod 7 = 1.
         assert_eq!(mod_inverse(3, 7), Some(5));
