@@ -74,9 +74,39 @@ pub fn is_generator(element: u64, prime: u64) -> bool {
     multiplicative_order(element, prime) == Some(prime - 1)
 }
 
+/// Returns whether `candidate` is prime using trial division.
+///
+/// This is suitable only for the small values used by the toy cryptography
+/// module. It is not an efficient cryptographic primality test.
+pub fn is_prime(candidate: u64) -> bool {
+    if candidate < 2 {
+        return false;
+    }
+
+    if candidate == 2 {
+        return true;
+    }
+
+    if candidate.is_multiple_of(2) {
+        return false;
+    }
+
+    let mut divisor = 3;
+
+    while divisor <= candidate / divisor {
+        if candidate.is_multiple_of(divisor) {
+            return false;
+        }
+
+        divisor += 2;
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_generator, mod_inverse, mod_mul, mod_pow, multiplicative_order};
+    use super::{is_generator, is_prime, mod_inverse, mod_mul, mod_pow, multiplicative_order};
 
     /// 2^64 - 59, the largest prime that fits in a u64.
     const LARGEST_U64_PRIME: u64 = 18_446_744_073_709_551_557;
@@ -172,6 +202,20 @@ mod tests {
         for element in 1..prime {
             let order = multiplicative_order(element, prime).unwrap();
             assert_eq!((prime - 1) % order, 0);
+        }
+    }
+
+    #[test]
+    fn identifies_small_prime_numbers() {
+        for prime in [2, 3, 5, 7, 23, 97] {
+            assert!(is_prime(prime), "{prime} should be prime");
+        }
+    }
+
+    #[test]
+    fn rejects_non_prime_numbers() {
+        for composite in [0, 1, 4, 9, 15, 21, 25, 100] {
+            assert!(!is_prime(composite), "{composite} should not be prime");
         }
     }
 }

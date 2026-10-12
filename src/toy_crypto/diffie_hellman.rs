@@ -3,7 +3,7 @@
 //! This implementation uses tiny integers, is not constant-time, and provides
 //! no peer authentication. It must never protect real secrets.
 
-use super::modular::{is_generator, mod_pow};
+use super::modular::{is_generator, is_prime, mod_pow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Parameters {
@@ -22,7 +22,7 @@ pub enum DiffieHellmanError {
 
 impl Parameters {
     pub fn new(prime: u64, generator: u64) -> Result<Self, DiffieHellmanError> {
-        if prime < 3 {
+        if !is_prime(prime) {
             return Err(DiffieHellmanError::InvalidPrime(prime));
         }
 
@@ -87,6 +87,14 @@ mod tests {
         assert_eq!(alice_shared, 2);
         assert_eq!(bob_shared, 2);
         assert_eq!(alice_shared, bob_shared);
+    }
+
+    #[test]
+    fn rejects_a_composite_modulus() {
+        assert_eq!(
+            Parameters::new(21, 2),
+            Err(DiffieHellmanError::InvalidPrime(21))
+        );
     }
 
     #[test]
