@@ -5,6 +5,7 @@
 
 use hkdf::{Hkdf, InvalidLength};
 use sha2::Sha256;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub const SESSION_KEY_LENGTH: usize = 32;
 
@@ -18,7 +19,7 @@ pub enum SessionRole {
     Server,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct SessionKeys {
     client_to_server: [u8; SESSION_KEY_LENGTH],
     server_to_client: [u8; SESSION_KEY_LENGTH],
@@ -70,7 +71,8 @@ pub fn derive_session_keys(
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionRole, derive_session_keys};
+    use super::{SESSION_KEY_LENGTH, SessionKeys, SessionRole, derive_session_keys};
+    use zeroize::{Zeroize, ZeroizeOnDrop};
 
     const SALT: &[u8] = b"phase-8-test-session";
 
@@ -154,5 +156,23 @@ mod tests {
             keys.send_key(SessionRole::Server),
             keys.receive_key(SessionRole::Server),
         );
+    }
+
+    #[test]
+    fn zeroize_erases_both_directional_keys() {
+        let shared_secret = 2_u64.to_be_bytes();
+        let mut keys = derive_session_keys(&shared_secret, SALT).unwrap();
+
+        keys.zeroize();
+
+        assert_eq!(keys.client_to_server(), &[0_u8; SESSION_KEY_LENGTH],);
+        assert_eq!(keys.server_to_client(), &[0_u8; SESSION_KEY_LENGTH],);
+    }
+
+    #[test]
+    fn session_keys_are_zeroized_on_drop() {
+        fn requires_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+
+        requires_zeroize_on_drop::<SessionKeys>();
     }
 }
