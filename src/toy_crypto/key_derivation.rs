@@ -12,6 +12,12 @@ const CLIENT_TO_SERVER_INFO: &[u8] = b"rust_vpn phase8 client-to-server";
 
 const SERVER_TO_CLIENT_INFO: &[u8] = b"rust_vpn phase8 server-to-client";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRole {
+    Client,
+    Server,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct SessionKeys {
     client_to_server: [u8; SESSION_KEY_LENGTH],
@@ -25,6 +31,20 @@ impl SessionKeys {
 
     pub fn server_to_client(&self) -> &[u8; SESSION_KEY_LENGTH] {
         &self.server_to_client
+    }
+
+    pub fn send_key(&self, role: SessionRole) -> &[u8; SESSION_KEY_LENGTH] {
+        match role {
+            SessionRole::Client => &self.client_to_server,
+            SessionRole::Server => &self.server_to_client,
+        }
+    }
+
+    pub fn receive_key(&self, role: SessionRole) -> &[u8; SESSION_KEY_LENGTH] {
+        match role {
+            SessionRole::Client => &self.server_to_client,
+            SessionRole::Server => &self.client_to_server,
+        }
     }
 }
 
@@ -50,7 +70,7 @@ pub fn derive_session_keys(
 
 #[cfg(test)]
 mod tests {
-    use super::derive_session_keys;
+    use super::{SessionRole, derive_session_keys};
 
     const SALT: &[u8] = b"phase-8-test-session";
 
@@ -97,5 +117,42 @@ mod tests {
         let second = derive_session_keys(&shared_secret, b"session-two").unwrap();
 
         assert_ne!(first.client_to_server(), second.client_to_server());
+    }
+
+    #[test]
+    fn client_send_key_matches_server_receive_key() {
+        let shared_secret = 2_u64.to_be_bytes();
+        let keys = derive_session_keys(&shared_secret, SALT).unwrap();
+
+        assert_eq!(
+            keys.send_key(SessionRole::Client),
+            keys.receive_key(SessionRole::Server),
+        );
+    }
+
+    #[test]
+    fn server_send_key_matches_client_receive_key() {
+        let shared_secret = 2_u64.to_be_bytes();
+        let keys = derive_session_keys(&shared_secret, SALT).unwrap();
+
+        assert_eq!(
+            keys.send_key(SessionRole::Server),
+            keys.receive_key(SessionRole::Client),
+        );
+    }
+
+    #[test]
+    fn each_role_uses_different_keys_for_sending_and_receiving() {
+        let shared_secret = 2_u64.to_be_bytes();
+        let keys = derive_session_keys(&shared_secret, SALT).unwrap();
+
+        assert_ne!(
+            keys.send_key(SessionRole::Client),
+            keys.receive_key(SessionRole::Client),
+        );
+        assert_ne!(
+            keys.send_key(SessionRole::Server),
+            keys.receive_key(SessionRole::Server),
+        );
     }
 }
