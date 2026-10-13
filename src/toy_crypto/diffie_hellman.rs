@@ -153,4 +153,51 @@ mod tests {
             Err(DiffieHellmanError::GeneratorDoesNotCoverGroup(4))
         );
     }
+
+    #[test]
+    fn unauthenticated_exchange_allows_a_man_in_the_middle() {
+        let parameters = Parameters::new(23, 5).unwrap();
+
+        let alice_private = 6;
+        let bob_private = 15;
+
+        let alice_public = parameters.public_key(alice_private).unwrap();
+
+        let bob_public = parameters.public_key(bob_private).unwrap();
+
+        // Mallory uses a different private key for each side.
+        let mallory_private_for_alice = 7;
+        let mallory_private_for_bob = 9;
+
+        let mallory_public_for_alice = parameters.public_key(mallory_private_for_alice).unwrap();
+
+        let mallory_public_for_bob = parameters.public_key(mallory_private_for_bob).unwrap();
+
+        // Alice thinks this public key belongs to Bob.
+        let alice_shared = parameters
+            .shared_secret(alice_private, mallory_public_for_alice)
+            .unwrap();
+
+        let mallory_shared_with_alice = parameters
+            .shared_secret(mallory_private_for_alice, alice_public)
+            .unwrap();
+
+        // Bob thinks this public key belongs to Alice.
+        let bob_shared = parameters
+            .shared_secret(bob_private, mallory_public_for_bob)
+            .unwrap();
+
+        let mallory_shared_with_bob = parameters
+            .shared_secret(mallory_private_for_bob, bob_public)
+            .unwrap();
+
+        assert_eq!(alice_shared, 12);
+        assert_eq!(mallory_shared_with_alice, 12);
+
+        assert_eq!(bob_shared, 10);
+        assert_eq!(mallory_shared_with_bob, 10);
+
+        // Alice and Bob no longer share a secret with each other.
+        assert_ne!(alice_shared, bob_shared);
+    }
 }
