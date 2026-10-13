@@ -2,5 +2,7 @@
 
 /// Toy Diffie-Hellman key agreement. Never use it for real secrets.
 pub mod diffie_hellman;
+/// HKDF-based session-key derivation for the learning exchange.
+pub mod key_derivation;
 /// Modular arithmetic for the toy Diffie-Hellman experiments. Not for real secrets.
 pub mod modular;
