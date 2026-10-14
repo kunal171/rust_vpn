@@ -10,3 +10,5 @@ pub mod modular;
 pub mod packet_crypto;
 /// Detects duplicate and excessively old authenticated packets.
 pub mod replay_window;
+/// Allocates unique packet counters for one sending key.
+pub mod send_counter;
