@@ -4,6 +4,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
 };
 
+use super::replay_window::{ReplayError, ReplayWindow};
 use crate::protocol::{Frame, MAX_PAYLOAD_SIZE, ProtocolError, encode_frame_header};
 
 pub const NONCE_LENGTH: usize = 12;
@@ -16,6 +17,7 @@ pub enum PacketCryptoError {
     InvalidFrame(ProtocolError),
     EncryptionFailed,
     AuthenticationFailed,
+    ReplayRejected(ReplayError),
 }
 
 impl From<ProtocolError> for PacketCryptoError {
@@ -122,13 +124,29 @@ pub fn decrypt_packet(
     )
 }
 
+pub fn unprotect_frame_once(
+    frame: &Frame,
+    key: &[u8; 32],
+    replay_window: &mut ReplayWindow,
+) -> Result<Frame, PacketCryptoError> {
+    // Authentication must happen before mutating replay state.
+    let plaintext = unprotect_frame(frame, key)?;
+
+    replay_window
+        .check_and_record(frame.counter())
+        .map_err(PacketCryptoError::ReplayRejected)?;
+
+    Ok(plaintext)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AUTHENTICATION_TAG_LENGTH, MAX_PLAINTEXT_SIZE, PacketCryptoError, decrypt_packet,
-        encrypt_packet, nonce_from_counter, protect_frame, unprotect_frame,
+        encrypt_packet, nonce_from_counter, protect_frame, unprotect_frame, unprotect_frame_once,
     };
     use crate::protocol::{Frame, MAX_PAYLOAD_SIZE, MessageType};
+    use crate::toy_crypto::replay_window::{ReplayError, ReplayWindow};
 
     #[test]
     fn counter_is_stored_in_network_byte_order() {
@@ -290,6 +308,55 @@ mod tests {
                 actual: MAX_PLAINTEXT_SIZE + 1,
                 maximum: MAX_PLAINTEXT_SIZE,
             }),
+        );
+    }
+
+    #[test]
+    fn authenticated_frame_is_accepted_only_once() {
+        let key = [7_u8; 32];
+        let mut replay_window = ReplayWindow::new();
+
+        let plaintext = Frame::new(MessageType::Data, 42, 7, b"packet".to_vec()).unwrap();
+
+        let protected = protect_frame(&plaintext, &key).unwrap();
+
+        assert_eq!(
+            unprotect_frame_once(&protected, &key, &mut replay_window,),
+            Ok(plaintext),
+        );
+
+        assert_eq!(
+            unprotect_frame_once(&protected, &key, &mut replay_window,),
+            Err(PacketCryptoError::ReplayRejected(ReplayError::Duplicate,)),
+        );
+    }
+
+    #[test]
+    fn unauthenticated_counter_does_not_update_replay_window() {
+        let key = [7_u8; 32];
+        let mut replay_window = ReplayWindow::new();
+
+        let plaintext = Frame::new(MessageType::Data, 42, 1, b"packet".to_vec()).unwrap();
+
+        let protected = protect_frame(&plaintext, &key).unwrap();
+
+        let forged = Frame::new(
+            protected.message_type(),
+            protected.session_id(),
+            1_000_000,
+            protected.payload().to_vec(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            unprotect_frame_once(&forged, &key, &mut replay_window,),
+            Err(PacketCryptoError::AuthenticationFailed),
+        );
+
+        // This proves the forged high counter was never recorded.
+        assert_eq!(
+            unprotect_frame_once(&protected, &key, &mut replay_window,),
+            Ok(plaintext),
         );
     }
 }
