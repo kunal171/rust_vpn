@@ -8,3 +8,5 @@ pub mod key_derivation;
 pub mod modular;
 /// Authenticated encryption experiments for the cryptography learning phase.
 pub mod packet_crypto;
+/// Detects duplicate and excessively old authenticated packets.
+pub mod replay_window;
