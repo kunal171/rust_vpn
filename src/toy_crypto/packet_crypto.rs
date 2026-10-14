@@ -4,8 +4,76 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
 };
 
+use crate::protocol::{Frame, MAX_PAYLOAD_SIZE, ProtocolError, encode_frame_header};
+
 pub const NONCE_LENGTH: usize = 12;
 pub const AUTHENTICATION_TAG_LENGTH: usize = 16;
+pub const MAX_PLAINTEXT_SIZE: usize = MAX_PAYLOAD_SIZE - AUTHENTICATION_TAG_LENGTH;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketCryptoError {
+    PlaintextTooLarge { actual: usize, maximum: usize },
+    InvalidFrame(ProtocolError),
+    EncryptionFailed,
+    AuthenticationFailed,
+}
+
+impl From<ProtocolError> for PacketCryptoError {
+    fn from(error: ProtocolError) -> Self {
+        Self::InvalidFrame(error)
+    }
+}
+
+pub fn protect_frame(frame: &Frame, key: &[u8; 32]) -> Result<Frame, PacketCryptoError> {
+    let plaintext_length = frame.payload().len();
+
+    if plaintext_length > MAX_PLAINTEXT_SIZE {
+        return Err(PacketCryptoError::PlaintextTooLarge {
+            actual: plaintext_length,
+            maximum: MAX_PLAINTEXT_SIZE,
+        });
+    }
+
+    let encrypted_length = plaintext_length + AUTHENTICATION_TAG_LENGTH;
+
+    let header = encode_frame_header(
+        frame.message_type(),
+        frame.session_id(),
+        frame.counter(),
+        encrypted_length,
+    )?;
+
+    let ciphertext = encrypt_packet(key, frame.counter(), frame.payload(), &header)
+        .map_err(|_| PacketCryptoError::EncryptionFailed)?;
+
+    Frame::new(
+        frame.message_type(),
+        frame.session_id(),
+        frame.counter(),
+        ciphertext,
+    )
+    .map_err(Into::into)
+}
+
+pub fn unprotect_frame(frame: &Frame, key: &[u8; 32]) -> Result<Frame, PacketCryptoError> {
+    let header = encode_frame_header(
+        frame.message_type(),
+        frame.session_id(),
+        frame.counter(),
+        frame.payload().len(),
+    )?;
+
+    let plaintext = decrypt_packet(key, frame.counter(), frame.payload(), &header)
+        .map_err(|_| PacketCryptoError::AuthenticationFailed)?;
+
+    Frame::new(
+        frame.message_type(),
+        frame.session_id(),
+        frame.counter(),
+        plaintext,
+    )
+    .map_err(Into::into)
+}
 
 pub fn nonce_from_counter(counter: u64) -> [u8; NONCE_LENGTH] {
     let mut nonce = [0_u8; NONCE_LENGTH];
@@ -56,7 +124,11 @@ pub fn decrypt_packet(
 
 #[cfg(test)]
 mod tests {
-    use super::{AUTHENTICATION_TAG_LENGTH, decrypt_packet, encrypt_packet, nonce_from_counter};
+    use super::{
+        AUTHENTICATION_TAG_LENGTH, MAX_PLAINTEXT_SIZE, PacketCryptoError, decrypt_packet,
+        encrypt_packet, nonce_from_counter, protect_frame, unprotect_frame,
+    };
+    use crate::protocol::{Frame, MAX_PAYLOAD_SIZE, MessageType};
 
     #[test]
     fn counter_is_stored_in_network_byte_order() {
@@ -127,5 +199,97 @@ mod tests {
         let ciphertext = encrypt_packet(&key, 1, b"inner packet", b"original-header").unwrap();
 
         assert!(decrypt_packet(&key, 1, &ciphertext, b"modified-header",).is_err());
+    }
+
+    #[test]
+    fn complete_frame_protection_round_trips() {
+        let key = [7_u8; 32];
+
+        let plaintext_frame =
+            Frame::new(MessageType::Data, 42, 1, b"inner IPv4 packet".to_vec()).unwrap();
+
+        let protected = protect_frame(&plaintext_frame, &key).unwrap();
+
+        assert_ne!(protected.payload(), plaintext_frame.payload());
+        assert_eq!(
+            protected.payload().len(),
+            plaintext_frame.payload().len() + AUTHENTICATION_TAG_LENGTH,
+        );
+
+        let recovered = unprotect_frame(&protected, &key).unwrap();
+
+        assert_eq!(recovered, plaintext_frame);
+    }
+
+    #[test]
+    fn rejects_a_modified_session_id() {
+        let key = [7_u8; 32];
+
+        let plaintext = Frame::new(MessageType::Data, 42, 1, b"packet".to_vec()).unwrap();
+
+        let protected = protect_frame(&plaintext, &key).unwrap();
+
+        let modified = Frame::new(
+            protected.message_type(),
+            99,
+            protected.counter(),
+            protected.payload().to_vec(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            unprotect_frame(&modified, &key),
+            Err(PacketCryptoError::AuthenticationFailed),
+        );
+    }
+
+    #[test]
+    fn rejects_a_modified_message_type() {
+        let key = [7_u8; 32];
+
+        let plaintext = Frame::new(MessageType::Data, 42, 1, b"packet".to_vec()).unwrap();
+
+        let protected = protect_frame(&plaintext, &key).unwrap();
+
+        let modified = Frame::new(
+            MessageType::Acknowledgment,
+            protected.session_id(),
+            protected.counter(),
+            protected.payload().to_vec(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            unprotect_frame(&modified, &key),
+            Err(PacketCryptoError::AuthenticationFailed),
+        );
+    }
+
+    #[test]
+    fn accepts_the_maximum_plaintext_size() {
+        let key = [7_u8; 32];
+
+        let plaintext =
+            Frame::new(MessageType::Data, 42, 1, vec![0xaa; MAX_PLAINTEXT_SIZE]).unwrap();
+
+        let protected = protect_frame(&plaintext, &key).unwrap();
+
+        assert_eq!(protected.payload().len(), MAX_PAYLOAD_SIZE);
+    }
+
+    #[test]
+    fn rejects_plaintext_that_cannot_fit_after_encryption() {
+        let key = [7_u8; 32];
+
+        let plaintext =
+            Frame::new(MessageType::Data, 42, 1, vec![0xaa; MAX_PLAINTEXT_SIZE + 1]).unwrap();
+
+        assert_eq!(
+            protect_frame(&plaintext, &key),
+            Err(PacketCryptoError::PlaintextTooLarge {
+                actual: MAX_PLAINTEXT_SIZE + 1,
+                maximum: MAX_PLAINTEXT_SIZE,
+            }),
+        );
     }
 }
