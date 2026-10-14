@@ -6,3 +6,5 @@ pub mod diffie_hellman;
 pub mod key_derivation;
 /// Modular arithmetic for the toy Diffie-Hellman experiments. Not for real secrets.
 pub mod modular;
+/// Authenticated encryption experiments for the cryptography learning phase.
+pub mod packet_crypto;
