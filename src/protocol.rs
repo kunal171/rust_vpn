@@ -145,16 +145,17 @@ impl Frame {
 
     /// Serializes this frame using the protocol's network byte order.
     pub fn encode(&self) -> Vec<u8> {
-        let payload_length =
-            u16::try_from(self.payload.len()).expect("validated payload length fits in u16");
+        let header = encode_frame_header(
+            self.message_type,
+            self.session_id,
+            self.counter,
+            self.payload.len(),
+        )
+        .expect("frame contains a validated payload length");
 
         let mut bytes = Vec::with_capacity(HEADER_SIZE + self.payload.len());
 
-        bytes.push(self.version);
-        bytes.push(self.message_type.as_u8());
-        bytes.extend_from_slice(&self.session_id.to_be_bytes());
-        bytes.extend_from_slice(&self.counter.to_be_bytes());
-        bytes.extend_from_slice(&payload_length.to_be_bytes());
+        bytes.extend_from_slice(&header);
         bytes.extend_from_slice(&self.payload);
 
         bytes
@@ -289,11 +290,38 @@ impl TryFrom<u8> for MessageType {
     }
 }
 
+pub fn encode_frame_header(
+    message_type: MessageType,
+    session_id: u32,
+    counter: u64,
+    payload_length: usize,
+) -> Result<[u8; HEADER_SIZE], ProtocolError> {
+    if payload_length > MAX_PAYLOAD_SIZE {
+        return Err(ProtocolError::PayloadTooLarge {
+            actual: payload_length,
+            maximum: MAX_PAYLOAD_SIZE,
+        });
+    }
+
+    let payload_length =
+        u16::try_from(payload_length).expect("validated payload length fits in u16");
+
+    let mut header = [0_u8; HEADER_SIZE];
+
+    header[0] = PROTOCOL_VERSION;
+    header[1] = message_type.as_u8();
+    header[2..6].copy_from_slice(&session_id.to_be_bytes());
+    header[6..14].copy_from_slice(&counter.to_be_bytes());
+    header[14..16].copy_from_slice(&payload_length.to_be_bytes());
+
+    Ok(header)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Frame, HEADER_SIZE, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE, MessageType, PROTOCOL_VERSION,
-        ProtocolError,
+        ProtocolError, encode_frame_header,
     };
 
     #[test]
@@ -494,5 +522,29 @@ mod tests {
         let acknowledgment = Frame::new(MessageType::Acknowledgment, 42, 7, Vec::new()).unwrap();
 
         assert_eq!(acknowledgment.acknowledgment(), None);
+    }
+
+    #[test]
+    fn separately_encoded_header_matches_frame_prefix() {
+        let frame = Frame::new(MessageType::Data, 42, 7, vec![1, 2, 3]).unwrap();
+
+        let encoded_frame = frame.encode();
+
+        let header = encode_frame_header(MessageType::Data, 42, 7, 3).unwrap();
+
+        assert_eq!(&encoded_frame[..HEADER_SIZE], &header);
+    }
+
+    #[test]
+    fn header_rejects_an_oversized_payload() {
+        let result = encode_frame_header(MessageType::Data, 42, 7, MAX_PAYLOAD_SIZE + 1);
+
+        assert_eq!(
+            result,
+            Err(ProtocolError::PayloadTooLarge {
+                actual: MAX_PAYLOAD_SIZE + 1,
+                maximum: MAX_PAYLOAD_SIZE,
+            }),
+        );
     }
 }

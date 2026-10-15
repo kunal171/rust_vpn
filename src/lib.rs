@@ -9,6 +9,8 @@ pub mod cidr;
 pub mod ipv4;
 /// Binary frame definitions and validation for data received from the network.
 pub mod protocol;
+/// Hand-written cryptographic math for learning. Never use it for real secrets.
+pub mod toy_crypto;
 /// UDP addresses, buffer sizes, timeouts, and temporary transport constants.
 pub mod transport;
 

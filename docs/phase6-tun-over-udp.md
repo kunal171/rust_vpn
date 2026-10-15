@@ -1,5 +1,9 @@
 # Phase 6: carrying TUN packets over UDP
 
+> Historical milestone: this document records the Phase 6 plaintext tunnel and its original CLI and
+> 1456-byte MTU. The current encrypted tunnel requires a `client` or `server` role and uses a
+> 1440-byte MTU; follow the repository README for current commands.
+
 Phase 6 joins the two halves built so far. Phases 1 to 4 moved framed bytes between peers over UDP; Phase 5 read and wrote IP packets on a TUN interface. The `vpn_tunnel` binary connects them: a packet read from TUN on one peer travels inside a `Data` frame over UDP and is written into TUN on the other peer, where the real kernel handles it.
 
 The tunnel is plaintext and unauthenticated. It demonstrates encapsulation, not security.
