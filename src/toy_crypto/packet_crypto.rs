@@ -1,4 +1,6 @@
 //! Authenticated packet encryption for the cryptography learning phase.
+use std::{error::Error, fmt};
+
 use chacha20poly1305::{
     ChaCha20Poly1305, Key, Nonce,
     aead::{Aead, KeyInit, Payload},
@@ -18,6 +20,43 @@ pub enum PacketCryptoError {
     EncryptionFailed,
     AuthenticationFailed,
     ReplayRejected(ReplayError),
+}
+
+impl fmt::Display for PacketCryptoError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PlaintextTooLarge { actual, maximum } => {
+                write!(
+                    formatter,
+                    "plaintext contains {actual} bytes, but the maximum is {maximum}"
+                )
+            }
+            Self::InvalidFrame(error) => {
+                write!(formatter, "invalid frame: {error}")
+            }
+            Self::EncryptionFailed => {
+                write!(formatter, "packet encryption failed")
+            }
+            Self::AuthenticationFailed => {
+                write!(formatter, "packet authentication failed")
+            }
+            Self::ReplayRejected(error) => {
+                write!(formatter, "packet rejected by replay protection: {error}")
+            }
+        }
+    }
+}
+
+impl Error for PacketCryptoError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidFrame(error) => Some(error),
+            Self::ReplayRejected(error) => Some(error),
+            Self::PlaintextTooLarge { .. }
+            | Self::EncryptionFailed
+            | Self::AuthenticationFailed => None,
+        }
+    }
 }
 
 impl From<ProtocolError> for PacketCryptoError {

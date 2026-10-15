@@ -1,13 +1,13 @@
 //! Stateful cryptographic operations for one VPN session.
 
-use crate::protocol::{Frame, MessageType, ProtocolError};
-
 use super::{
     key_derivation::{SessionKeys, SessionRole},
     packet_crypto::{MAX_PLAINTEXT_SIZE, PacketCryptoError, protect_frame, unprotect_frame_once},
     replay_window::ReplayWindow,
     send_counter::{SendCounter, SendCounterError},
 };
+use crate::protocol::{Frame, MessageType, ProtocolError};
+use std::{error::Error, fmt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CryptoSessionError {
@@ -15,6 +15,39 @@ pub enum CryptoSessionError {
     Protocol(ProtocolError),
     Crypto(PacketCryptoError),
     WrongSessionId { expected: u32, received: u32 },
+}
+
+impl fmt::Display for CryptoSessionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Counter(error) => {
+                write!(formatter, "send counter failure: {error}")
+            }
+            Self::Protocol(error) => {
+                write!(formatter, "protocol failure: {error}")
+            }
+            Self::Crypto(error) => {
+                write!(formatter, "cryptographic failure: {error}")
+            }
+            Self::WrongSessionId { expected, received } => {
+                write!(
+                    formatter,
+                    "frame session ID {received} does not match expected session ID {expected}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for CryptoSessionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Counter(error) => Some(error),
+            Self::Protocol(error) => Some(error),
+            Self::Crypto(error) => Some(error),
+            Self::WrongSessionId { .. } => None,
+        }
+    }
 }
 
 impl From<SendCounterError> for CryptoSessionError {
@@ -197,6 +230,22 @@ mod tests {
             Err(CryptoSessionError::Crypto(
                 PacketCryptoError::ReplayRejected(ReplayError::Duplicate,),
             )),
+        );
+    }
+
+    #[test]
+    fn preserves_nested_error_sources() {
+        use std::error::Error;
+
+        let error =
+            CryptoSessionError::Crypto(PacketCryptoError::ReplayRejected(ReplayError::Duplicate));
+
+        let packet_error = error.source().unwrap();
+        let replay_error = packet_error.source().unwrap();
+
+        assert_eq!(
+            replay_error.to_string(),
+            "packet counter has already been received",
         );
     }
 }
