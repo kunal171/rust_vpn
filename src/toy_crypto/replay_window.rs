@@ -11,13 +11,22 @@ pub enum ReplayError {
 }
 
 impl fmt::Display for ReplayError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        formatter: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
         match self {
             Self::Duplicate => {
-                write!(formatter, "packet counter has already been received")
+                write!(
+                    formatter,
+                    "packet counter has already been received"
+                )
             }
             Self::TooOld => {
-                write!(formatter, "packet counter is outside the replay window")
+                write!(
+                    formatter,
+                    "packet counter is outside the replay window"
+                )
             }
         }
     }
@@ -141,5 +150,18 @@ mod tests {
 
         assert_eq!(window.check_and_record(1), Err(ReplayError::TooOld),);
         assert_eq!(window.check_and_record(100), Err(ReplayError::Duplicate),);
+    }
+
+    #[test]
+    fn replay_errors_have_readable_messages() {
+        assert_eq!(
+            ReplayError::Duplicate.to_string(),
+            "packet counter has already been received",
+        );
+
+        assert_eq!(
+            ReplayError::TooOld.to_string(),
+            "packet counter is outside the replay window",
+        );
     }
 }
