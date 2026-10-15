@@ -1,5 +1,7 @@
 //! Sliding-window detection for replayed packet counters.
 
+use std::{error::Error, fmt};
+
 pub const REPLAY_WINDOW_SIZE: u64 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7,6 +9,21 @@ pub enum ReplayError {
     Duplicate,
     TooOld,
 }
+
+impl fmt::Display for ReplayError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Duplicate => {
+                write!(formatter, "packet counter has already been received")
+            }
+            Self::TooOld => {
+                write!(formatter, "packet counter is outside the replay window")
+            }
+        }
+    }
+}
+
+impl Error for ReplayError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayWindow {

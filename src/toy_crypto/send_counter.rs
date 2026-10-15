@@ -1,9 +1,22 @@
 //! Monotonic packet-counter allocation for unique send nonces.
+use std::{error::Error, fmt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendCounterError {
     Exhausted,
 }
+
+impl fmt::Display for SendCounterError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Exhausted => {
+                write!(formatter, "send counter is exhausted")
+            }
+        }
+    }
+}
+
+impl Error for SendCounterError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendCounter {
@@ -51,5 +64,13 @@ mod tests {
 
         assert_eq!(counters.take_next(), Ok(u64::MAX));
         assert_eq!(counters.take_next(), Err(SendCounterError::Exhausted),);
+    }
+
+    #[test]
+    fn exhausted_error_has_a_readable_message() {
+        assert_eq!(
+            SendCounterError::Exhausted.to_string(),
+            "send counter is exhausted",
+        );
     }
 }
