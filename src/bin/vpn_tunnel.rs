@@ -8,6 +8,10 @@
 use rust_vpn::cidr::{CidrError, Ipv4Cidr};
 use rust_vpn::ipv4::decode_ipv4_header;
 use rust_vpn::protocol::{Frame, MessageType};
+use rust_vpn::toy_crypto::{
+    key_derivation::{SessionRole, derive_session_keys},
+    session::{CryptoReceiver, CryptoSender, CryptoSession},
+};
 use rust_vpn::transport::RECEIVE_BUFFER_SIZE;
 use std::env;
 use std::error::Error;
@@ -19,15 +23,30 @@ use tun::{Configuration, Layer, Reader, Writer};
 const TUN_NAME: &str = "rvpn0";
 const TUN_NETMASK: &str = "255.255.255.0";
 
-const USAGE: &str = "usage: vpn_tunnel <tun-address> <bind-address> <peer-address> <allowed-ips>\n\
-    example: vpn_tunnel 10.210.0.1 10.200.1.1:51820 10.200.1.2:51820 10.210.0.2/32";
+const USAGE: &str = "usage: vpn_tunnel <client|server> <tun-address> <bind-address> \
+     <peer-address> <allowed-ips>";
+
+const LAB_SHARED_SECRET: &[u8] = b"phase-8-public-lab-secret-not-secure";
+
+const LAB_SESSION_SALT: &[u8] = b"phase-8-tunnel-session";
 
 /// Link MTU (1500) minus outer IPv4 (20), UDP (8), and frame header (16),
 /// so an encapsulated packet still fits in one link-sized datagram.
-const TUN_MTU: u16 = 1456;
+const TUN_MTU: u16 = 1440;
 const SESSION_ID: u32 = 1;
 // Same reasoning as tun_reader: the largest possible IPv4 packet.
 const PACKET_BUFFER_SIZE: usize = 65_535;
+
+fn parse_role(value: &str) -> io::Result<SessionRole> {
+    match value {
+        "client" => Ok(SessionRole::Client),
+        "server" => Ok(SessionRole::Server),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "role must be client or server",
+        )),
+    }
+}
 
 /// Parses a comma-separated list such as `10.210.0.2/32,10.200.4.0/24`.
 fn parse_allowed_ips(text: &str) -> Result<Vec<Ipv4Cidr>, CidrError> {
@@ -46,6 +65,11 @@ fn required_argument(
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args().skip(1);
+
+    let role = parse_role(&required_argument(&mut arguments, "role")?)?;
+    let keys = derive_session_keys(LAB_SHARED_SECRET, LAB_SESSION_SALT)?;
+
+    let (sender, receiver) = CryptoSession::new(SESSION_ID, role, keys).into_split();
 
     let tun_address: Ipv4Addr = required_argument(&mut arguments, "tun-address")?.parse()?;
     let bind_address: SocketAddr = required_argument(&mut arguments, "bind-address")?.parse()?;
@@ -81,37 +105,36 @@ fn main() -> Result<(), Box<dyn Error>> {
     let send_socket = socket.try_clone()?;
 
     thread::spawn(move || {
-        if let Err(error) = tun_to_udp(reader, send_socket, peer_address) {
+        if let Err(error) = tun_to_udp(reader, send_socket, peer_address, sender) {
             eprintln!("TUN to UDP stopped: {error}");
             // A tunnel that can only receive is broken; stop the whole process.
             std::process::exit(1);
         }
     });
 
-    udp_to_tun(socket, writer, &allowed_ips)?;
+    udp_to_tun(socket, writer, &allowed_ips, receiver)?;
 
     Ok(())
 }
 
 /// Reads packets from TUN and sends each one to the peer in a Data frame.
-fn tun_to_udp(mut reader: Reader, socket: UdpSocket, peer_address: SocketAddr) -> io::Result<()> {
+fn tun_to_udp(
+    mut reader: Reader,
+    socket: UdpSocket,
+    peer_address: SocketAddr,
+    mut sender: CryptoSender,
+) -> io::Result<()> {
     let mut buffer = vec![0_u8; PACKET_BUFFER_SIZE];
-    let mut counter: u64 = 0;
 
     loop {
         let packet_length = reader.read(&mut buffer)?;
         let packet = &buffer[..packet_length];
 
-        counter += 1;
+        let frame = sender
+            .protect(MessageType::Data, packet.to_vec())
+            .map_err(io::Error::other)?;
 
-        let frame = match Frame::new(MessageType::Data, SESSION_ID, counter, packet.to_vec()) {
-            Ok(frame) => frame,
-            Err(error) => {
-                eprintln!("Dropping TUN packet: {error}");
-                continue;
-            }
-        };
-
+        let counter = frame.counter();
         let encoded_frame = frame.encode();
 
         // A missing peer must not stop the tunnel; drop the packet and go on.
@@ -126,7 +149,12 @@ fn tun_to_udp(mut reader: Reader, socket: UdpSocket, peer_address: SocketAddr) -
 }
 
 /// Receives Data frames from the peer and writes their payloads into TUN.
-fn udp_to_tun(socket: UdpSocket, mut writer: Writer, allowed_ips: &[Ipv4Cidr]) -> io::Result<()> {
+fn udp_to_tun(
+    socket: UdpSocket,
+    mut writer: Writer,
+    allowed_ips: &[Ipv4Cidr],
+    mut receiver: CryptoReceiver,
+) -> io::Result<()> {
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
 
     loop {
@@ -137,10 +165,21 @@ fn udp_to_tun(socket: UdpSocket, mut writer: Writer, allowed_ips: &[Ipv4Cidr]) -
             Err(error) => return Err(error),
         };
 
-        let frame = match Frame::decode(&buffer[..received_length]) {
+        let protected_frame = match Frame::decode(&buffer[..received_length]) {
             Ok(frame) => frame,
             Err(error) => {
                 eprintln!("Rejected malformed frame: {error}");
+                continue;
+            }
+        };
+
+        let frame = match receiver.unprotect(&protected_frame) {
+            Ok(frame) => frame,
+            Err(error) => {
+                eprintln!(
+                    "Rejected protected frame counter={}: {error}",
+                    protected_frame.counter()
+                );
                 continue;
             }
         };
@@ -180,5 +219,22 @@ fn udp_to_tun(socket: UdpSocket, mut writer: Writer, allowed_ips: &[Ipv4Cidr]) -
                 frame.counter()
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_role;
+    use rust_vpn::toy_crypto::key_derivation::SessionRole;
+
+    #[test]
+    fn parses_client_and_server_roles() {
+        assert_eq!(parse_role("client").unwrap(), SessionRole::Client);
+        assert_eq!(parse_role("server").unwrap(), SessionRole::Server);
+    }
+
+    #[test]
+    fn rejects_unknown_roles() {
+        assert!(parse_role("peer").is_err());
     }
 }
