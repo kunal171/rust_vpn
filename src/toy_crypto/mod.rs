@@ -12,3 +12,5 @@ pub mod packet_crypto;
 pub mod replay_window;
 /// Allocates unique packet counters for one sending key.
 pub mod send_counter;
+/// Owns keys and counter state for one cryptographic session.
+pub mod session;
