@@ -7,6 +7,8 @@ This project exists to learn networking, Linux packet handling, and Rust systems
 ## Status
 
 Phase 7 is complete: routing and NAT through the tunnel, with allowed source addresses per peer.
+Phase 8 is in progress: the cryptographic building blocks are implemented and tested, but they
+are not yet connected to the running tunnel.
 
 Working foundations:
 
@@ -21,8 +23,16 @@ Working foundations:
 - A two-way plaintext tunnel: TUN packets encapsulated in Data frames over UDP
 - Routing to a LAN behind the server, with NAT masquerade on the server
 - Allowed IPs: inner packets from unexpected source addresses are dropped
+- Toy modular arithmetic and Diffie-Hellman exercises that demonstrate why unauthenticated key
+  exchange is vulnerable to a man-in-the-middle attack
+- HKDF-SHA256 derivation of separate client-to-server and server-to-client session keys
+- ChaCha20-Poly1305 frame protection with the visible frame header authenticated as associated data
+- Automatic send counters, a 64-packet replay window, secret zeroization, and stateful cryptographic
+  sessions
 
-Not implemented yet: encryption, authentication, replay protection, or full-tunnel (default route) mode.
+The `vpn_tunnel` binary still transports plaintext frames. A real authenticated key exchange,
+encrypted-tunnel integration, operational hardening, and full-tunnel mode are not implemented yet.
+The hand-written Diffie-Hellman module is for learning only and must never protect real traffic.
 
 ## Layout
 
@@ -33,6 +43,14 @@ src/
 ├── ipv4.rs
 ├── protocol.rs
 ├── transport.rs
+├── toy_crypto/
+│   ├── diffie_hellman.rs
+│   ├── key_derivation.rs
+│   ├── modular.rs
+│   ├── packet_crypto.rs
+│   ├── replay_window.rs
+│   ├── send_counter.rs
+│   └── session.rs
 └── bin/
     ├── tun_reader.rs
     ├── vpn_client.rs
@@ -79,7 +97,8 @@ ping -c 3 10.210.0.2
 
 ## Tunnel demo
 
-`vpn_tunnel` connects a TUN interface to one UDP peer. Run one peer in each namespace of the direct lab:
+`vpn_tunnel` connects a TUN interface to one UDP peer. It is currently a plaintext learning tunnel;
+do not use it to carry sensitive traffic. Run one peer in each namespace of the direct lab:
 
 ```bash
 cargo build
@@ -134,5 +153,9 @@ cargo test
 
 ## Roadmap
 
-- Add authenticated encryption and replay protection
+- Integrate the tested authenticated-encryption and replay-protection layer into `vpn_tunnel`
+- Add a real authenticated X25519-based key exchange; never use the toy Diffie-Hellman module
+- Add keepalives, timeouts, reconnect behavior, bounded queues, and graceful shutdown
+- Recalculate the tunnel MTU for encryption overhead and test fragmentation and PMTUD
 - Add a full-tunnel mode that routes all traffic without a routing loop
+- Add DNS configuration and leak testing for full-tunnel operation
