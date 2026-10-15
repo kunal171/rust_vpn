@@ -1,9 +1,9 @@
 //! Connects a Linux TUN interface to a UDP peer.
 //!
-//! One thread reads packets from TUN and sends them to the peer in Data
-//! frames; the main thread receives frames from the peer and writes their
-//! payloads into TUN. Both ends run this same program with mirrored
-//! arguments.
+//! One thread reads packets from TUN, encrypts them, and sends protected Data
+//! frames to the peer. The main thread authenticates and decrypts received
+//! frames before writing their inner IP packets into TUN. Both ends run this
+//! same program with mirrored roles and addresses.
 
 use rust_vpn::cidr::{CidrError, Ipv4Cidr};
 use rust_vpn::ipv4::decode_ipv4_header;
@@ -26,17 +26,24 @@ const TUN_NETMASK: &str = "255.255.255.0";
 const USAGE: &str = "usage: vpn_tunnel <client|server> <tun-address> <bind-address> \
      <peer-address> <allowed-ips>";
 
+// These public, fixed bytes make the encrypted data path reproducible while
+// learning. They provide no secrecy, peer authentication, or safe key renewal.
+// Restarting also resets the counter and therefore reuses nonces with this key.
 const LAB_SHARED_SECRET: &[u8] = b"phase-8-public-lab-secret-not-secure";
 
+// Both peers must use the same salt so HKDF derives matching directional keys.
 const LAB_SESSION_SALT: &[u8] = b"phase-8-tunnel-session";
 
-/// Link MTU (1500) minus outer IPv4 (20), UDP (8), and frame header (16),
-/// so an encapsulated packet still fits in one link-sized datagram.
+/// Link MTU (1500) minus outer IPv4 (20), UDP (8), frame header (16),
+/// and authentication tag (16), avoiding outer IP fragmentation.
 const TUN_MTU: u16 = 1440;
+// The fixed ID is sufficient for the one-session lab. A future handshake will
+// negotiate fresh session identity and key material.
 const SESSION_ID: u32 = 1;
 // Same reasoning as tun_reader: the largest possible IPv4 packet.
 const PACKET_BUFFER_SIZE: usize = 65_535;
 
+/// Converts the command-line role into directional send and receive key usage.
 fn parse_role(value: &str) -> io::Result<SessionRole> {
     match value {
         "client" => Ok(SessionRole::Client),
@@ -67,8 +74,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args().skip(1);
 
     let role = parse_role(&required_argument(&mut arguments, "role")?)?;
+
+    // HKDF turns the shared lab bytes into independent keys for each traffic
+    // direction. The role decides which key this peer sends and receives with.
     let keys = derive_session_keys(LAB_SHARED_SECRET, LAB_SESSION_SALT)?;
 
+    // The sending thread owns the only send counter, while the receiving loop
+    // independently owns replay-window state for authenticated inbound packets.
     let (sender, receiver) = CryptoSession::new(SESSION_ID, role, keys).into_split();
 
     let tun_address: Ipv4Addr = required_argument(&mut arguments, "tun-address")?.parse()?;
@@ -89,7 +101,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let device = tun::create(&configuration)?;
 
     let socket = UdpSocket::bind(bind_address)?;
-    // As in vpn_client: no handshake, just a default peer for send/recv.
+    // UDP connect performs no handshake; it only fixes the peer used by
+    // send/recv. Cryptographic key agreement is also not implemented yet.
     socket.connect(peer_address)?;
 
     println!("Created {TUN_NAME} with address {tun_address}/24");
@@ -117,7 +130,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Reads packets from TUN and sends each one to the peer in a Data frame.
+/// Reads inner IP packets from TUN and sends each in a protected Data frame.
 fn tun_to_udp(
     mut reader: Reader,
     socket: UdpSocket,
@@ -130,6 +143,8 @@ fn tun_to_udp(
         let packet_length = reader.read(&mut buffer)?;
         let packet = &buffer[..packet_length];
 
+        // CryptoSender allocates a unique counter, encrypts the inner packet,
+        // and authenticates the visible frame header as associated data.
         let frame = sender
             .protect(MessageType::Data, packet.to_vec())
             .map_err(io::Error::other)?;
@@ -148,7 +163,7 @@ fn tun_to_udp(
     }
 }
 
-/// Receives Data frames from the peer and writes their payloads into TUN.
+/// Authenticates received Data frames and writes their inner IP packets to TUN.
 fn udp_to_tun(
     socket: UdpSocket,
     mut writer: Writer,
@@ -165,6 +180,8 @@ fn udp_to_tun(
             Err(error) => return Err(error),
         };
 
+        // Structural decoding is safe before decryption, but none of these
+        // peer-controlled header fields are trusted until unprotect succeeds.
         let protected_frame = match Frame::decode(&buffer[..received_length]) {
             Ok(frame) => frame,
             Err(error) => {
@@ -173,6 +190,8 @@ fn udp_to_tun(
             }
         };
 
+        // Authentication happens before replay-window mutation and before the
+        // decrypted payload reaches IPv4 validation or the kernel's TUN input.
         let frame = match receiver.unprotect(&protected_frame) {
             Ok(frame) => frame,
             Err(error) => {

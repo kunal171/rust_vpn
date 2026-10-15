@@ -7,8 +7,8 @@ This project exists to learn networking, Linux packet handling, and Rust systems
 ## Status
 
 Phase 7 is complete: routing and NAT through the tunnel, with allowed source addresses per peer.
-Phase 8 is in progress: the cryptographic building blocks are implemented and tested, but they
-are not yet connected to the running tunnel.
+Phase 8 is complete: the cryptographic foundations are tested and connected to the tunnel through
+a deliberately insecure, reproducible lab key. A real authenticated key exchange is still required.
 
 Working foundations:
 
@@ -20,7 +20,7 @@ Working foundations:
 - Repeatable direct-veth and Linux-bridge namespace labs
 - IPv4 header decoding, Internet checksum, and ICMP echo replies
 - A TUN interface that answers `ping` from user space
-- A two-way plaintext tunnel: TUN packets encapsulated in Data frames over UDP
+- A two-way encrypted learning tunnel: TUN packets protected with ChaCha20-Poly1305 over UDP
 - Routing to a LAN behind the server, with NAT masquerade on the server
 - Allowed IPs: inner packets from unexpected source addresses are dropped
 - Toy modular arithmetic and Diffie-Hellman exercises that demonstrate why unauthenticated key
@@ -30,9 +30,11 @@ Working foundations:
 - Automatic send counters, a 64-packet replay window, secret zeroization, and stateful cryptographic
   sessions
 
-The `vpn_tunnel` binary still transports plaintext frames. A real authenticated key exchange,
-encrypted-tunnel integration, operational hardening, and full-tunnel mode are not implemented yet.
-The hand-written Diffie-Hellman module is for learning only and must never protect real traffic.
+The tunnel currently derives its keys from a public constant. This proves the encrypted data path,
+directional keys, authentication, and replay protection, but provides no secrecy or peer
+authentication. Restarting a peer also reuses counters with the same key, which violates AEAD nonce
+uniqueness. A real authenticated handshake must install fresh keys before this can protect actual
+traffic. The hand-written Diffie-Hellman module is for learning only and is never used by the tunnel.
 
 ## Layout
 
@@ -97,21 +99,26 @@ ping -c 3 10.210.0.2
 
 ## Tunnel demo
 
-`vpn_tunnel` connects a TUN interface to one UDP peer. It is currently a plaintext learning tunnel;
-do not use it to carry sensitive traffic. Run one peer in each namespace of the direct lab:
+`vpn_tunnel` connects a TUN interface to one UDP peer and protects its frames with a public lab key.
+The encryption integration is observable, but the public and reused key means sensitive traffic is
+not safe. Run one peer in each namespace of the direct lab:
 
 ```bash
 cargo build
 sudo ./scripts/netns-direct.sh up
 # Terminal 1:
-sudo ip netns exec rvpn-client ./target/debug/vpn_tunnel 10.210.0.1 10.200.1.1:51820 10.200.1.2:51820 10.210.0.2/32
+sudo ip netns exec rvpn-client ./target/debug/vpn_tunnel client 10.210.0.1 10.200.1.1:51820 10.200.1.2:51820 10.210.0.2/32
 # Terminal 2:
-sudo ip netns exec rvpn-server ./target/debug/vpn_tunnel 10.210.0.2 10.200.1.2:51820 10.200.1.1:51820 10.210.0.1/32
+sudo ip netns exec rvpn-server ./target/debug/vpn_tunnel server 10.210.0.2 10.200.1.2:51820 10.200.1.1:51820 10.210.0.1/32
 # Terminal 3:
 sudo ip netns exec rvpn-client ping -c 3 10.210.0.2
 ```
 
-The arguments are the TUN address, the local UDP bind address, the peer's UDP address, and the comma-separated networks the peer may send from. The ping replies come from the kernel in `rvpn-server`, carried back through the tunnel. Remove the lab with `sudo ./scripts/netns-direct.sh down`. See [Phase 6](docs/phase6-tun-over-udp.md) for the design, the MTU calculation, and the verification captures.
+The arguments are the cryptographic role, TUN address, local UDP bind address, peer UDP address, and
+comma-separated networks the peer may send from. The ping replies come from the kernel in
+`rvpn-server`, carried back through the encrypted tunnel. The 1440-byte TUN MTU accounts for the
+outer IPv4 and UDP headers, frame header, and authentication tag. Remove the lab with
+`sudo ./scripts/netns-direct.sh down`.
 
 ## Routing and NAT demo
 
@@ -121,9 +128,9 @@ The routed lab adds a LAN host behind the server, which the client reaches throu
 cargo build
 sudo ./scripts/netns-routed.sh up
 # Terminal 1:
-sudo ip netns exec rvpnr-client ./target/debug/vpn_tunnel 10.210.0.1 10.200.3.1:51820 10.200.3.2:51820 10.210.0.2/32,10.200.4.0/24
+sudo ip netns exec rvpnr-client ./target/debug/vpn_tunnel client 10.210.0.1 10.200.3.1:51820 10.200.3.2:51820 10.210.0.2/32,10.200.4.0/24
 # Terminal 2:
-sudo ip netns exec rvpnr-server ./target/debug/vpn_tunnel 10.210.0.2 10.200.3.2:51820 10.200.3.1:51820 10.210.0.1/32
+sudo ip netns exec rvpnr-server ./target/debug/vpn_tunnel server 10.210.0.2 10.200.3.2:51820 10.200.3.1:51820 10.210.0.1/32
 # Terminal 3:
 sudo ./scripts/netns-routed.sh route
 sudo ./scripts/netns-routed.sh nat
@@ -153,9 +160,9 @@ cargo test
 
 ## Roadmap
 
-- Integrate the tested authenticated-encryption and replay-protection layer into `vpn_tunnel`
-- Add a real authenticated X25519-based key exchange; never use the toy Diffie-Hellman module
+- Add a real authenticated X25519-based key exchange with fresh session keys; never use the toy
+  Diffie-Hellman module
 - Add keepalives, timeouts, reconnect behavior, bounded queues, and graceful shutdown
-- Recalculate the tunnel MTU for encryption overhead and test fragmentation and PMTUD
+- Make the tunnel MTU configurable for IPv4 or IPv6 outer transport and test PMTUD
 - Add a full-tunnel mode that routes all traffic without a routing loop
 - Add DNS configuration and leak testing for full-tunnel operation

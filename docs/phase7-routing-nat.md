@@ -1,5 +1,9 @@
 # Phase 7: routing, NAT, and allowed IPs
 
+> Historical milestone: this document records routing behavior before Phase 8 encryption. The
+> current `vpn_tunnel` CLI also requires a leading `client` or `server` role; follow the repository
+> README for current commands.
+
 Phase 6 connected two tunnel addresses. Phase 7 lets the client reach a whole network behind the far peer, which is what makes a VPN useful: an office LAN, or the internet for a privacy VPN. The far peer becomes a **gateway**.
 
 Three Linux mechanisms make that work: a route on the client, forwarding on the gateway, and NAT on the gateway. Most of this phase is kernel configuration, as it is for real VPNs. The Rust part is **allowed IPs**: each peer may only send inner packets from addresses it has been given, so it cannot inject spoofed traffic into the other side's network.
