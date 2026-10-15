@@ -1,4 +1,11 @@
 //! Authenticated packet encryption for the cryptography learning phase.
+//!
+//! The frame header remains visible so a receiver can route and parse a packet,
+//! but it is supplied as associated data and therefore cannot be modified
+//! without authentication failing. Only the frame payload is encrypted.
+//!
+//! Each directional key requires a unique nonce for every packet. This module
+//! derives that nonce from the monotonically increasing packet counter.
 use std::{error::Error, fmt};
 
 use chacha20poly1305::{
@@ -9,11 +16,15 @@ use chacha20poly1305::{
 use super::replay_window::{ReplayError, ReplayWindow};
 use crate::protocol::{Frame, MAX_PAYLOAD_SIZE, ProtocolError, encode_frame_header};
 
+/// Nonce size required by ChaCha20-Poly1305.
 pub const NONCE_LENGTH: usize = 12;
+/// Extra bytes appended by ChaCha20-Poly1305 to authenticate a ciphertext.
 pub const AUTHENTICATION_TAG_LENGTH: usize = 16;
+/// Largest plaintext that still fits after its authentication tag is appended.
 pub const MAX_PLAINTEXT_SIZE: usize = MAX_PAYLOAD_SIZE - AUTHENTICATION_TAG_LENGTH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Failures while protecting, authenticating, or replay-checking a frame.
 pub enum PacketCryptoError {
     PlaintextTooLarge { actual: usize, maximum: usize },
     InvalidFrame(ProtocolError),
@@ -65,6 +76,10 @@ impl From<ProtocolError> for PacketCryptoError {
     }
 }
 
+/// Encrypts a frame payload and authenticates its encoded header.
+///
+/// The returned frame has the same routing fields and counter, but its payload
+/// contains `ciphertext || authentication_tag`.
 pub fn protect_frame(frame: &Frame, key: &[u8; 32]) -> Result<Frame, PacketCryptoError> {
     let plaintext_length = frame.payload().len();
 
@@ -75,6 +90,8 @@ pub fn protect_frame(frame: &Frame, key: &[u8; 32]) -> Result<Frame, PacketCrypt
         });
     }
 
+    // Payload length is part of the authenticated header, so construct the
+    // header with the final ciphertext length before performing encryption.
     let encrypted_length = plaintext_length + AUTHENTICATION_TAG_LENGTH;
 
     let header = encode_frame_header(
@@ -84,6 +101,7 @@ pub fn protect_frame(frame: &Frame, key: &[u8; 32]) -> Result<Frame, PacketCrypt
         encrypted_length,
     )?;
 
+    // Associated data is authenticated but is not included in the ciphertext.
     let ciphertext = encrypt_packet(key, frame.counter(), frame.payload(), &header)
         .map_err(|_| PacketCryptoError::EncryptionFailed)?;
 
@@ -96,6 +114,10 @@ pub fn protect_frame(frame: &Frame, key: &[u8; 32]) -> Result<Frame, PacketCrypt
     .map_err(Into::into)
 }
 
+/// Authenticates and decrypts a protected frame.
+///
+/// Re-encoding the received fields reconstructs the exact associated data used
+/// by the sender. Any changed field therefore makes decryption fail.
 pub fn unprotect_frame(frame: &Frame, key: &[u8; 32]) -> Result<Frame, PacketCryptoError> {
     let header = encode_frame_header(
         frame.message_type(),
@@ -116,6 +138,11 @@ pub fn unprotect_frame(frame: &Frame, key: &[u8; 32]) -> Result<Frame, PacketCry
     .map_err(Into::into)
 }
 
+/// Maps a 64-bit packet counter into the 96-bit ChaCha20-Poly1305 nonce format.
+///
+/// Layout: `four zero bytes || counter in network byte order`. A counter must
+/// never repeat under the same key; a reset is safe only after installing a new
+/// directional key.
 pub fn nonce_from_counter(counter: u64) -> [u8; NONCE_LENGTH] {
     let mut nonce = [0_u8; NONCE_LENGTH];
 
@@ -124,6 +151,7 @@ pub fn nonce_from_counter(counter: u64) -> [u8; NONCE_LENGTH] {
     nonce
 }
 
+/// Encrypts bytes with ChaCha20-Poly1305 and authenticates `associated_data`.
 pub fn encrypt_packet(
     key_bytes: &[u8; 32],
     counter: u64,
@@ -143,6 +171,7 @@ pub fn encrypt_packet(
     )
 }
 
+/// Authenticates and decrypts bytes produced by [`encrypt_packet`].
 pub fn decrypt_packet(
     key_bytes: &[u8; 32],
     counter: u64,
@@ -163,12 +192,17 @@ pub fn decrypt_packet(
     )
 }
 
+/// Authenticates a frame and accepts its counter at most once.
+///
+/// Authentication deliberately happens before replay state is changed. This
+/// prevents a forged packet with a very large counter from moving the window
+/// forward and causing valid packets to be rejected.
 pub fn unprotect_frame_once(
     frame: &Frame,
     key: &[u8; 32],
     replay_window: &mut ReplayWindow,
 ) -> Result<Frame, PacketCryptoError> {
-    // Authentication must happen before mutating replay state.
+    // Do not record attacker-controlled counter values before authentication.
     let plaintext = unprotect_frame(frame, key)?;
 
     replay_window

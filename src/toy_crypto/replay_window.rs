@@ -1,12 +1,23 @@
 //! Sliding-window detection for replayed packet counters.
+//!
+//! UDP packets may arrive out of order, so accepting only counters larger than
+//! the last one would reject legitimate traffic. A 64-bit bitmap remembers the
+//! newest counter and the previous 63 counters: bit 0 represents `highest`, bit
+//! 1 represents `highest - 1`, and so on.
+//!
+//! Callers must authenticate a packet before recording its counter.
 
 use std::{error::Error, fmt};
 
+/// Number of recent packet counters tracked in the bitmap.
 pub const REPLAY_WINDOW_SIZE: u64 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Reasons an authenticated packet counter cannot be accepted.
 pub enum ReplayError {
+    /// The exact counter is already marked in the current window.
     Duplicate,
+    /// The counter fell behind the oldest position retained by the window.
     TooOld,
 }
 
@@ -26,12 +37,16 @@ impl fmt::Display for ReplayError {
 impl Error for ReplayError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Replay state for one receive direction and one traffic key.
 pub struct ReplayWindow {
+    /// Largest authenticated counter observed so far, or `None` before any packet.
     highest: Option<u64>,
+    /// Bitmap of received counters relative to `highest`.
     seen: u64,
 }
 
 impl ReplayWindow {
+    /// Creates an empty replay window.
     pub const fn new() -> Self {
         Self {
             highest: None,
@@ -39,8 +54,10 @@ impl ReplayWindow {
         }
     }
 
+    /// Checks whether `counter` is fresh and records it atomically when accepted.
     pub fn check_and_record(&mut self, counter: u64) -> Result<(), ReplayError> {
         let Some(highest) = self.highest else {
+            // The first packet becomes bit 0 and establishes the reference point.
             self.highest = Some(counter);
             self.seen = 1;
             return Ok(());
@@ -49,6 +66,8 @@ impl ReplayWindow {
         if counter > highest {
             let shift = counter - highest;
 
+            // A jump of 64 or more makes every old bit irrelevant. A smaller
+            // jump moves the history left, then bit 0 records the new counter.
             self.seen = if shift >= REPLAY_WINDOW_SIZE {
                 1
             } else {
@@ -59,6 +78,7 @@ impl ReplayWindow {
             return Ok(());
         }
 
+        // Older packets are allowed when their corresponding bit is still in range.
         let distance = highest - counter;
 
         if distance >= REPLAY_WINDOW_SIZE {

@@ -1,4 +1,11 @@
 //! Stateful cryptographic operations for one VPN session.
+//!
+//! This layer joins directional keys, nonce counters, authenticated encryption,
+//! and replay protection. It assumes an authenticated handshake has already
+//! agreed on the session ID and keys; that handshake is not implemented here.
+//!
+//! A session can be split into sender and receiver halves so a future tunnel can
+//! process TUN-to-UDP and UDP-to-TUN traffic in separate tasks or threads.
 
 use super::{
     key_derivation::{SessionKeys, SessionRole},
@@ -10,6 +17,7 @@ use crate::protocol::{Frame, MessageType, ProtocolError};
 use std::{error::Error, fmt, sync::Arc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Errors produced while sending or receiving through a cryptographic session.
 pub enum CryptoSessionError {
     Counter(SendCounterError),
     Protocol(ProtocolError),
@@ -68,6 +76,10 @@ impl From<PacketCryptoError> for CryptoSessionError {
     }
 }
 
+/// Send-only half of a session.
+///
+/// It deliberately is not `Clone`: there must be one owner of the monotonically
+/// increasing counter for this directional key.
 pub struct CryptoSender {
     session_id: u32,
     role: SessionRole,
@@ -75,6 +87,7 @@ pub struct CryptoSender {
     send_counter: SendCounter,
 }
 
+/// Receive-only half of a session, including its mutable replay history.
 pub struct CryptoReceiver {
     session_id: u32,
     role: SessionRole,
@@ -82,12 +95,17 @@ pub struct CryptoReceiver {
     receive_window: ReplayWindow,
 }
 
+/// Convenience owner that keeps the two independent session halves together.
 pub struct CryptoSession {
     sender: CryptoSender,
     receiver: CryptoReceiver,
 }
 
 impl CryptoSession {
+    /// Creates fresh send-counter and replay state for an already-derived key pair.
+    ///
+    /// The halves share one immutable key allocation through `Arc`; the final
+    /// owner dropping it triggers `SessionKeys` zeroization.
     pub fn new(session_id: u32, role: SessionRole, keys: SessionKeys) -> Self {
         let keys = Arc::new(keys);
 
@@ -107,6 +125,7 @@ impl CryptoSession {
         }
     }
 
+    /// Encrypts one outgoing payload using the next unique send counter.
     pub fn protect(
         &mut self,
         message_type: MessageType,
@@ -115,21 +134,26 @@ impl CryptoSession {
         self.sender.protect(message_type, payload)
     }
 
+    /// Authenticates, replay-checks, and decrypts one incoming frame.
     pub fn unprotect(&mut self, frame: &Frame) -> Result<Frame, CryptoSessionError> {
         self.receiver.unprotect(frame)
     }
 
+    /// Separates send and receive state for independent tunnel processing loops.
     pub fn into_split(self) -> (CryptoSender, CryptoReceiver) {
         (self.sender, self.receiver)
     }
 }
 
 impl CryptoSender {
+    /// Builds and protects an outgoing frame for this session.
     pub fn protect(
         &mut self,
         message_type: MessageType,
         payload: Vec<u8>,
     ) -> Result<Frame, CryptoSessionError> {
+        // Reject invalid input before consuming a counter. Every allocated
+        // counter should correspond to a real encryption attempt.
         if payload.len() > MAX_PLAINTEXT_SIZE {
             return Err(PacketCryptoError::PlaintextTooLarge {
                 actual: payload.len(),
@@ -147,7 +171,10 @@ impl CryptoSender {
 }
 
 impl CryptoReceiver {
+    /// Validates and opens an incoming frame exactly once.
     pub fn unprotect(&mut self, frame: &Frame) -> Result<Frame, CryptoSessionError> {
+        // Keep traffic from another negotiated session out of this replay state.
+        // The matching session ID is also authenticated as part of the header.
         if frame.session_id() != self.session_id {
             return Err(CryptoSessionError::WrongSessionId {
                 expected: self.session_id,

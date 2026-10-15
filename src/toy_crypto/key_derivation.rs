@@ -7,33 +7,44 @@ use hkdf::{Hkdf, InvalidLength};
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+/// ChaCha20-Poly1305 accepts a 256-bit (32-byte) key.
 pub const SESSION_KEY_LENGTH: usize = 32;
 
+// Distinct HKDF `info` labels provide domain separation: even with identical
+// input material, the two traffic directions cannot derive the same key.
 const CLIENT_TO_SERVER_INFO: &[u8] = b"rust_vpn phase8 client-to-server";
 
 const SERVER_TO_CLIENT_INFO: &[u8] = b"rust_vpn phase8 server-to-client";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Selects which directional key a local endpoint sends and receives with.
 pub enum SessionRole {
     Client,
     Server,
 }
 
 #[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+/// The two independent traffic keys belonging to one session.
+///
+/// `Debug` is intentionally not derived, which reduces accidental key logging.
+/// The key bytes are overwritten when the value is explicitly zeroized or dropped.
 pub struct SessionKeys {
     client_to_server: [u8; SESSION_KEY_LENGTH],
     server_to_client: [u8; SESSION_KEY_LENGTH],
 }
 
 impl SessionKeys {
+    /// Returns the key used for packets travelling from client to server.
     pub fn client_to_server(&self) -> &[u8; SESSION_KEY_LENGTH] {
         &self.client_to_server
     }
 
+    /// Returns the key used for packets travelling from server to client.
     pub fn server_to_client(&self) -> &[u8; SESSION_KEY_LENGTH] {
         &self.server_to_client
     }
 
+    /// Chooses the key this local role must use to send a packet.
     pub fn send_key(&self, role: SessionRole) -> &[u8; SESSION_KEY_LENGTH] {
         match role {
             SessionRole::Client => &self.client_to_server,
@@ -41,6 +52,7 @@ impl SessionKeys {
         }
     }
 
+    /// Chooses the key this local role must use to receive a packet.
     pub fn receive_key(&self, role: SessionRole) -> &[u8; SESSION_KEY_LENGTH] {
         match role {
             SessionRole::Client => &self.server_to_client,
@@ -49,14 +61,21 @@ impl SessionKeys {
     }
 }
 
+/// Derives two directional traffic keys from shared input key material.
+///
+/// The salt should identify the session and must be the same at both peers.
+/// HKDF first extracts uniform pseudorandom key material, then expands it using
+/// separate labels so the traffic directions remain cryptographically separate.
 pub fn derive_session_keys(
     shared_secret: &[u8],
     salt: &[u8],
 ) -> Result<SessionKeys, InvalidLength> {
+    // Extract the possibly uneven Diffie-Hellman bytes into HKDF's pseudorandom key.
     let hkdf = Hkdf::<Sha256>::new(Some(salt), shared_secret);
 
     let mut client_to_server = [0_u8; SESSION_KEY_LENGTH];
 
+    // Expand once per direction with different context labels.
     hkdf.expand(CLIENT_TO_SERVER_INFO, &mut client_to_server)?;
 
     let mut server_to_client = [0_u8; SESSION_KEY_LENGTH];

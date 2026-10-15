@@ -1,8 +1,13 @@
 //! Monotonic packet-counter allocation for unique send nonces.
+//!
+//! ChaCha20-Poly1305 must never reuse a nonce with the same key. One counter is
+//! therefore owned by each sending direction and is never allowed to wrap.
 use std::{error::Error, fmt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Failure to allocate another unique counter under the current key.
 pub enum SendCounterError {
+    /// Every `u64` counter has been consumed; a fresh key is required.
     Exhausted,
 }
 
@@ -19,15 +24,22 @@ impl fmt::Display for SendCounterError {
 impl Error for SendCounterError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Allocates strictly increasing counters for one directional traffic key.
 pub struct SendCounter {
+    /// `Some` contains the next value; `None` permanently marks exhaustion.
     next: Option<u64>,
 }
 
 impl SendCounter {
+    /// Creates a counter whose first allocated value is one.
     pub const fn new() -> Self {
         Self { next: Some(1) }
     }
 
+    /// Returns the current counter and advances without ever wrapping to zero.
+    ///
+    /// `u64::MAX` is returned once. Its checked increment produces `None`, so
+    /// every later call reports exhaustion instead of reusing a nonce.
     pub fn take_next(&mut self) -> Result<u64, SendCounterError> {
         let counter = self.next.ok_or(SendCounterError::Exhausted)?;
 

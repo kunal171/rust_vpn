@@ -6,21 +6,31 @@
 use super::modular::{is_generator, is_prime, mod_pow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public parameters that define the small multiplicative group used by both peers.
 pub struct Parameters {
+    /// Prime modulus that bounds every calculation.
     prime: u64,
+    /// Generator whose powers cover every nonzero value modulo `prime`.
     generator: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Validation failures for the toy key exchange.
 pub enum DiffieHellmanError {
+    /// Diffie-Hellman requires a prime modulus for this simplified group.
     InvalidPrime(u64),
+    /// A generator must be strictly between one and the modulus.
     InvalidGenerator(u64),
+    /// The chosen value does not generate the complete multiplicative group.
     GeneratorDoesNotCoverGroup(u64),
+    /// Private exponents are restricted to `1..prime - 1` in this exercise.
     InvalidPrivateKey(u64),
+    /// A received public key is outside this exercise's accepted range.
     InvalidPeerPublicKey(u64),
 }
 
 impl Parameters {
+    /// Validates and constructs a shared set of toy Diffie-Hellman parameters.
     pub fn new(prime: u64, generator: u64) -> Result<Self, DiffieHellmanError> {
         if !is_prime(prime) {
             return Err(DiffieHellmanError::InvalidPrime(prime));
@@ -37,12 +47,17 @@ impl Parameters {
         Ok(Self { prime, generator })
     }
 
+    /// Computes the public value `generator^private_key mod prime`.
     pub fn public_key(&self, private_key: u64) -> Result<u64, DiffieHellmanError> {
         self.validate_private_key(private_key)?;
 
         Ok(mod_pow(self.generator, private_key, self.prime))
     }
 
+    /// Raises the peer's public value to our private exponent.
+    ///
+    /// Both peers reach `generator^(alice_private * bob_private) mod prime`,
+    /// even though neither private exponent is sent across the network.
     pub fn shared_secret(
         &self,
         private_key: u64,
