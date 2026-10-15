@@ -7,7 +7,7 @@ use super::{
     send_counter::{SendCounter, SendCounterError},
 };
 use crate::protocol::{Frame, MessageType, ProtocolError};
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, sync::Arc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CryptoSessionError {
@@ -68,25 +68,63 @@ impl From<PacketCryptoError> for CryptoSessionError {
     }
 }
 
-pub struct CryptoSession {
+pub struct CryptoSender {
     session_id: u32,
     role: SessionRole,
-    keys: SessionKeys,
+    keys: Arc<SessionKeys>,
     send_counter: SendCounter,
+}
+
+pub struct CryptoReceiver {
+    session_id: u32,
+    role: SessionRole,
+    keys: Arc<SessionKeys>,
     receive_window: ReplayWindow,
+}
+
+pub struct CryptoSession {
+    sender: CryptoSender,
+    receiver: CryptoReceiver,
 }
 
 impl CryptoSession {
     pub fn new(session_id: u32, role: SessionRole, keys: SessionKeys) -> Self {
+        let keys = Arc::new(keys);
+
         Self {
-            session_id,
-            role,
-            keys,
-            send_counter: SendCounter::new(),
-            receive_window: ReplayWindow::new(),
+            sender: CryptoSender {
+                session_id,
+                role,
+                keys: Arc::clone(&keys),
+                send_counter: SendCounter::new(),
+            },
+            receiver: CryptoReceiver {
+                session_id,
+                role,
+                keys,
+                receive_window: ReplayWindow::new(),
+            },
         }
     }
 
+    pub fn protect(
+        &mut self,
+        message_type: MessageType,
+        payload: Vec<u8>,
+    ) -> Result<Frame, CryptoSessionError> {
+        self.sender.protect(message_type, payload)
+    }
+
+    pub fn unprotect(&mut self, frame: &Frame) -> Result<Frame, CryptoSessionError> {
+        self.receiver.unprotect(frame)
+    }
+
+    pub fn into_split(self) -> (CryptoSender, CryptoReceiver) {
+        (self.sender, self.receiver)
+    }
+}
+
+impl CryptoSender {
     pub fn protect(
         &mut self,
         message_type: MessageType,
@@ -106,7 +144,9 @@ impl CryptoSession {
 
         protect_frame(&plaintext, self.keys.send_key(self.role)).map_err(Into::into)
     }
+}
 
+impl CryptoReceiver {
     pub fn unprotect(&mut self, frame: &Frame) -> Result<Frame, CryptoSessionError> {
         if frame.session_id() != self.session_id {
             return Err(CryptoSessionError::WrongSessionId {
@@ -246,6 +286,40 @@ mod tests {
         assert_eq!(
             replay_error.to_string(),
             "packet counter has already been received",
+        );
+    }
+
+    #[test]
+    fn split_halves_exchange_protected_frames() {
+        let secret = 2_u64.to_be_bytes();
+        let salt = b"split-session";
+
+        let client_keys = derive_session_keys(&secret, salt).unwrap();
+
+        let server_keys = derive_session_keys(&secret, salt).unwrap();
+
+        let (mut client_sender, mut client_receiver) =
+            CryptoSession::new(42, SessionRole::Client, client_keys).into_split();
+
+        let (mut server_sender, mut server_receiver) =
+            CryptoSession::new(42, SessionRole::Server, server_keys).into_split();
+
+        let request = client_sender
+            .protect(MessageType::Data, b"request".to_vec())
+            .unwrap();
+
+        assert_eq!(
+            server_receiver.unprotect(&request).unwrap().payload(),
+            b"request",
+        );
+
+        let response = server_sender
+            .protect(MessageType::Data, b"response".to_vec())
+            .unwrap();
+
+        assert_eq!(
+            client_receiver.unprotect(&response).unwrap().payload(),
+            b"response",
         );
     }
 }
