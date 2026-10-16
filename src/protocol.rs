@@ -28,6 +28,8 @@ pub enum MessageType {
     Data = 1,
     /// Confirms receipt of a previously sent data message.
     Acknowledgment = 2,
+    /// Starts a handshake by carrying the client's ephemeral public key.
+    ClientHello = 3,
 }
 
 /// One logical message exchanged between VPN peers.
@@ -285,6 +287,7 @@ impl TryFrom<u8> for MessageType {
         match value {
             value if value == Self::Data.as_u8() => Ok(Self::Data),
             value if value == Self::Acknowledgment.as_u8() => Ok(Self::Acknowledgment),
+            value if value == Self::ClientHello.as_u8() => Ok(Self::ClientHello),
             value => Err(ProtocolError::UnknownMessageType(value)),
         }
     }
@@ -336,6 +339,7 @@ mod tests {
     fn message_types_have_stable_wire_values() {
         assert_eq!(MessageType::Data.as_u8(), 1);
         assert_eq!(MessageType::Acknowledgment.as_u8(), 2);
+        assert_eq!(MessageType::ClientHello.as_u8(), 3);
     }
 
     #[test]
@@ -343,6 +347,8 @@ mod tests {
         assert_eq!(MessageType::try_from(1), Ok(MessageType::Data));
 
         assert_eq!(MessageType::try_from(2), Ok(MessageType::Acknowledgment));
+
+        assert_eq!(MessageType::try_from(3), Ok(MessageType::ClientHello));
     }
 
     #[test]
