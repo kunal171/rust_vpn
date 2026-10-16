@@ -7,6 +7,8 @@
 pub mod cidr;
 /// Canonical transcript hashed and authenticated during VPN handshakes.
 pub mod handshake;
+/// Long-term Ed25519 identities used to authenticate peers.
+pub mod identity;
 /// IPv4 header decoding, the Internet checksum, and ICMP echo replies.
 pub mod ipv4;
 /// Ephemeral X25519 key agreement for creating fresh session secrets.
