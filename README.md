@@ -64,7 +64,8 @@ docs/
 ├── phase3-packet-capture.md
 ├── phase4-linux-namespaces.md
 ├── phase6-tun-over-udp.md
-└── phase7-routing-nat.md
+├── phase7-routing-nat.md
+└── phase8-9-cryptography-guide.md
 scripts/
 ├── netns-direct.sh
 ├── netns-bridge.sh
@@ -145,6 +146,7 @@ sudo ip netns exec rvpnr-client ping -c 3 10.200.4.2
 - [Phase 4: Linux namespaces](docs/phase4-linux-namespaces.md)
 - [Phase 6: TUN over UDP](docs/phase6-tun-over-udp.md)
 - [Phase 7: routing, NAT, and allowed IPs](docs/phase7-routing-nat.md)
+- [Phases 8 and 9: cryptography, components, and data flow](docs/phase8-9-cryptography-guide.md)
 - `scripts/netns-direct.sh`: direct veth topology
 - `scripts/netns-bridge.sh`: bridged topology
 - `scripts/netns-routed.sh`: client, gateway, and LAN host for routing and NAT
