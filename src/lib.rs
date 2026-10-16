@@ -7,6 +7,7 @@
 pub mod cidr;
 /// IPv4 header decoding, the Internet checksum, and ICMP echo replies.
 pub mod ipv4;
+pub mod key_exchange;
 /// Binary frame definitions and validation for data received from the network.
 pub mod protocol;
 /// Hand-written cryptographic math for learning. Never use it for real secrets.
