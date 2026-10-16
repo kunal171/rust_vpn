@@ -5,8 +5,11 @@
 
 /// IPv4 networks in CIDR notation, used as a peer's allowed source addresses.
 pub mod cidr;
+/// Canonical transcript hashed and authenticated during VPN handshakes.
+pub mod handshake;
 /// IPv4 header decoding, the Internet checksum, and ICMP echo replies.
 pub mod ipv4;
+/// Ephemeral X25519 key agreement for creating fresh session secrets.
 pub mod key_exchange;
 /// Binary frame definitions and validation for data received from the network.
 pub mod protocol;
