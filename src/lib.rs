@@ -9,6 +9,8 @@ pub mod authenticated_handshake;
 pub mod cidr;
 /// Canonical transcript hashed and authenticated during VPN handshakes.
 pub mod handshake;
+/// Encoding and validation of handshake messages carried over UDP.
+pub mod handshake_transport;
 /// Long-term Ed25519 identities used to authenticate peers.
 pub mod identity;
 /// IPv4 header decoding, the Internet checksum, and ICMP echo replies.
