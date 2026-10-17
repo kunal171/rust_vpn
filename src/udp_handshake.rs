@@ -10,6 +10,18 @@ use crate::{
     },
     identity::{IDENTITY_PUBLIC_KEY_LENGTH, IdentityKeyPair},
     transport::RECEIVE_BUFFER_SIZE,
+    toy_crypto::{
+        key_derivation::SessionRole,
+        session::{
+            CryptoSession,
+            CryptoSessionError,
+        },
+    }
+    protocol::{
+        Frame,
+        MessageType,
+        ProtocolError,
+    };
 };
 
 #[derive(Debug)]
@@ -21,6 +33,18 @@ pub enum UdpHandshakeError {
     PartialDatagram { expected: usize, sent: usize },
 
     RandomSessionId(getrandom::Error),
+
+    Protocol(ProtocolError),
+
+    Session(CryptoSessionError),
+
+    UnexpectedConfirmationType {
+        received: MessageType,
+    },
+
+    NonEmptyConfirmation {
+        actual: usize,
+    },
 }
 
 impl fmt::Display for UdpHandshakeError {
@@ -38,6 +62,23 @@ impl fmt::Display for UdpHandshakeError {
             Self::RandomSessionId(error) => {
                 write!(formatter, "failed to generate a session ID: {error}")
             }
+            Self::Protocol(error) => {
+    write!(formatter, "invalid confirmation frame: {error}")
+}
+
+Self::Session(error) => {
+    write!(formatter, "protected confirmation failed: {error}")
+}
+
+Self::UnexpectedConfirmationType { received } => write!(
+    formatter,
+    "expected HandshakeComplete, received {received:?}"
+),
+
+Self::NonEmptyConfirmation { actual } => write!(
+    formatter,
+    "HandshakeComplete payload must be empty, received {actual} bytes"
+),
         }
     }
 }
@@ -49,7 +90,12 @@ impl Error for UdpHandshakeError {
             Self::Transport(error) => Some(error),
             Self::Authentication(error) => Some(error),
             Self::RandomSessionId(error) => Some(error),
-            Self::PartialDatagram { .. } => None,
+            Self::Protocol(error) => Some(error),
+            Self::Session(error) => Some(error),
+
+            Self::UnexpectedConfirmationType { .. }
+            | Self::NonEmptyConfirmation { .. }
+            | Self::PartialDatagram { .. } => None,
         }
     }
 }
@@ -75,6 +121,17 @@ impl From<AuthenticatedHandshakeError> for UdpHandshakeError {
 impl From<getrandom::Error> for UdpHandshakeError {
     fn from(error: getrandom::Error) -> Self {
         Self::RandomSessionId(error)
+    }
+}
+impl From<ProtocolError> for UdpHandshakeError {
+    fn from(error: ProtocolError) -> Self {
+        Self::Protocol(error)
+    }
+}
+
+impl From<CryptoSessionError> for UdpHandshakeError {
+    fn from(error: CryptoSessionError) -> Self {
+        Self::Session(error)
     }
 }
 
@@ -109,7 +166,7 @@ pub fn perform_client_handshake(
     socket: &UdpSocket,
     client_identity: &IdentityKeyPair,
     expected_server_identity: [u8; IDENTITY_PUBLIC_KEY_LENGTH],
-) -> Result<HandshakeResult, UdpHandshakeError> {
+) -> Result<CryptoSession, UdpHandshakeError> {
     let (client_state, client_hello) = ClientHandshake::start();
 
     let client_hello_bytes = encode_client_hello(client_hello)?;
@@ -140,7 +197,7 @@ pub fn perform_server_handshake(
     socket: &UdpSocket,
     server_identity: &IdentityKeyPair,
     expected_client_identity: [u8; IDENTITY_PUBLIC_KEY_LENGTH],
-) -> Result<HandshakeResult, UdpHandshakeError> {
+) -> Result<CryptoSession, UdpHandshakeError> {
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
 
     let received_length = socket.recv(&mut buffer)?;

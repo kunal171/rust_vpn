@@ -32,6 +32,8 @@ pub enum MessageType {
     ClientHello = 3,
     ServerHello = 4,
     ClientAuth = 5,
+    /// Confirms that authentication succeeded and traffic keys are active.
+    HandshakeComplete = 6,
 }
 
 /// One logical message exchanged between VPN peers.
@@ -292,6 +294,9 @@ impl TryFrom<u8> for MessageType {
             value if value == Self::ClientHello.as_u8() => Ok(Self::ClientHello),
             value if value == Self::ServerHello.as_u8() => Ok(Self::ServerHello),
             value if value == Self::ClientAuth.as_u8() => Ok(Self::ClientAuth),
+            value if value == Self::HandshakeComplete.as_u8() => {
+                Ok(Self::HandshakeComplete)
+            }
             value => Err(ProtocolError::UnknownMessageType(value)),
         }
     }
@@ -346,6 +351,7 @@ mod tests {
         assert_eq!(MessageType::ClientHello.as_u8(), 3);
         assert_eq!(MessageType::ServerHello.as_u8(), 4);
         assert_eq!(MessageType::ClientAuth.as_u8(), 5);
+        assert_eq!(MessageType::HandshakeComplete.as_u8(), 6);
     }
 
     #[test]
@@ -359,6 +365,10 @@ mod tests {
         assert_eq!(MessageType::try_from(4), Ok(MessageType::ServerHello));
 
         assert_eq!(MessageType::try_from(5), Ok(MessageType::ClientAuth));
+        assert_eq!(
+            MessageType::try_from(6),
+            Ok(MessageType::HandshakeComplete)
+        );
     }
 
     #[test]
