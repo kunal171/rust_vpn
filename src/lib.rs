@@ -3,16 +3,28 @@
 //! Keeping shared types and constants in the library avoids duplicating them
 //! across the binaries and lets integration tests import them.
 
+/// Authenticated X25519 and Ed25519 handshake state transitions.
+pub mod authenticated_handshake;
 /// IPv4 networks in CIDR notation, used as a peer's allowed source addresses.
 pub mod cidr;
+/// Canonical transcript hashed and authenticated during VPN handshakes.
+pub mod handshake;
+/// Encoding and validation of handshake messages carried over UDP.
+pub mod handshake_transport;
+/// Long-term Ed25519 identities used to authenticate peers.
+pub mod identity;
 /// IPv4 header decoding, the Internet checksum, and ICMP echo replies.
 pub mod ipv4;
+/// Ephemeral X25519 key agreement for creating fresh session secrets.
+pub mod key_exchange;
 /// Binary frame definitions and validation for data received from the network.
 pub mod protocol;
 /// Hand-written cryptographic math for learning. Never use it for real secrets.
 pub mod toy_crypto;
 /// UDP addresses, buffer sizes, timeouts, and temporary transport constants.
 pub mod transport;
+/// Authenticated handshake exchange over a connected UDP socket.
+pub mod udp_handshake;
 
 /// Identifies which side of the client-server example is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
