@@ -8,7 +8,9 @@ This project exists to learn networking, Linux packet handling, and Rust systems
 
 Phase 7 is complete: routing and NAT through the tunnel, with allowed source addresses per peer.
 Phase 8 is complete: the cryptographic foundations are tested and connected to the tunnel through
-a deliberately insecure, reproducible lab key. A real authenticated key exchange is still required.
+a deliberately insecure, reproducible lab key. Phase 9 is complete: an authenticated X25519 and
+Ed25519 handshake runs over UDP, derives fresh directional keys, and returns a confirmed
+`CryptoSession`. Connecting that handshake to `vpn_tunnel` is the next phase.
 
 Working foundations:
 
@@ -29,22 +31,31 @@ Working foundations:
 - ChaCha20-Poly1305 frame protection with the visible frame header authenticated as associated data
 - Automatic send counters, a 64-packet replay window, secret zeroization, and stateful cryptographic
   sessions
+- An authenticated UDP handshake with ephemeral X25519 keys, pinned Ed25519 peer identities, and an
+  encrypted `HandshakeComplete` key-confirmation message
 
-The tunnel currently derives its keys from a public constant. This proves the encrypted data path,
-directional keys, authentication, and replay protection, but provides no secrecy or peer
+The `vpn_tunnel` executable still derives its keys from a public constant. This proves the encrypted
+data path, directional keys, authentication, and replay protection, but provides no secrecy or peer
 authentication. Restarting a peer also reuses counters with the same key, which violates AEAD nonce
-uniqueness. A real authenticated handshake must install fresh keys before this can protect actual
-traffic. The hand-written Diffie-Hellman module is for learning only and is never used by the tunnel.
+uniqueness. The Phase 9 handshake is implemented and tested as a separate module; it must be wired
+into `vpn_tunnel` before the executable can protect actual traffic with fresh authenticated keys.
+The hand-written Diffie-Hellman module is for learning only and is never used by the tunnel.
 
 ## Layout
 
 ```text
 src/
 ├── lib.rs
+├── authenticated_handshake.rs
 ├── cidr.rs
+├── handshake.rs
+├── handshake_transport.rs
+├── identity.rs
 ├── ipv4.rs
+├── key_exchange.rs
 ├── protocol.rs
 ├── transport.rs
+├── udp_handshake.rs
 ├── toy_crypto/
 │   ├── diffie_hellman.rs
 │   ├── key_derivation.rs
@@ -162,8 +173,8 @@ cargo test
 
 ## Roadmap
 
-- Add a real authenticated X25519-based key exchange with fresh session keys; never use the toy
-  Diffie-Hellman module
+- Install the authenticated handshake's fresh session into `vpn_tunnel` and load pinned identity
+  keys from configuration
 - Add keepalives, timeouts, reconnect behavior, bounded queues, and graceful shutdown
 - Make the tunnel MTU configurable for IPv4 or IPv6 outer transport and test PMTUD
 - Add a full-tunnel mode that routes all traffic without a routing loop

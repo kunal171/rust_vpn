@@ -243,10 +243,9 @@ Both peers hash those fields in exactly the same order. They sign or verify the 
 If an attacker changes any bound field, the reconstructed hash changes and signature verification
 fails.
 
-## Planned Phase 9 handshake flow
+## Completed Phase 9 handshake flow
 
-The exact wire messages and state machine are the next design step. Conceptually, the completed
-flow will look like this:
+The completed state machine exchanges four wire messages:
 
 ```mermaid
 sequenceDiagram
@@ -256,24 +255,26 @@ sequenceDiagram
 
     Note over C,S: Before connecting: each peer pins the other's Ed25519 public key
     Note over C: Generate fresh ephemeral X25519 key pair
-    C->>N: Client handshake data + client ephemeral public key
+    C->>N: ClientHello(client ephemeral public key)
     N->>S: Forward or modify packet
     Note over S: Generate fresh ephemeral X25519 key pair and choose session ID
     Note over S: Build transcript and sign its hash with server Ed25519 identity
-    S->>N: Session ID + server ephemeral public key + server signature
+    S->>N: ServerHello(session ID, server ephemeral key, signature)
     N->>C: Forward or modify packet
     Note over C: Rebuild transcript and verify signature using pinned server public key
-    C->>N: Client authentication or key-confirmation message
+    C->>N: ClientAuth(client signature)
     N->>S: Forward or modify packet
     Note over S: Verify using pinned client public key
     Note over C,S: Each side calculates the same X25519 shared secret
     Note over C,S: HKDF(shared secret + transcript context) creates C2S and S2C keys
     Note over C,S: Install CryptoSession; erase unneeded temporary secrets
+    S->>N: Protected HandshakeComplete using server counter 1
+    N->>C: Forward, modify, duplicate, or drop packet
+    Note over C: Authenticate, decrypt, validate empty payload, and record counter 1
 ```
 
-This diagram shows the responsibilities, not a finalized wire format. We still need to decide the
-message types, exact signed bytes, key confirmation, retransmission and timeout behavior, and when
-each state transition is allowed.
+The client accepts completion only after authenticating and decrypting `HandshakeComplete`.
+Plaintext, wrong-key, wrong-type, non-empty, and replayed confirmations are rejected by tests.
 
 ### Why authenticate before using the keys?
 
@@ -315,19 +316,24 @@ TUN moves decrypted IP packets between the VPN process and the Linux kernel.
 UDP transports the protected frames but provides no reliability or security itself.
 ```
 
-## What Phase 9 still needs
+## Phase 9 completion boundary
 
-Before this becomes a functional authenticated handshake, the project still needs:
+Phase 9 completed:
 
-- explicit handshake frame/message formats;
+- explicit handshake frame and message formats;
 - client and server handshake state machines;
-- signature verification against configured, pinned peer identities;
-- a finalized HKDF input that binds derived keys to the transcript;
-- key confirmation so each side knows the other derived the same keys;
+- signature verification against pinned peer identities;
+- HKDF input bound to the authenticated transcript;
+- protected key confirmation;
+- success and rejection tests over real loopback UDP sockets and in-memory cryptographic sessions.
+
+The next integration phase still needs:
+
 - secure identity-key loading/storage rather than generating a new identity every launch;
 - timeouts, retransmission, duplicate-message handling, and clean failure behavior over UDP;
 - installation of the negotiated session ID and keys into `vpn_tunnel`;
-- integration tests for success, tampering, wrong identity, replay, loss, and reordering.
+- executable-level integration tests for loss, reordering, reconnects, and authenticated tunnel
+  traffic.
 
 Even after those learning milestones, production VPN work would require protocol review, denial-of-
 service defenses, privilege separation, key rotation, configuration hardening, and considerably

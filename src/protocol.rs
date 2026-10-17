@@ -294,9 +294,7 @@ impl TryFrom<u8> for MessageType {
             value if value == Self::ClientHello.as_u8() => Ok(Self::ClientHello),
             value if value == Self::ServerHello.as_u8() => Ok(Self::ServerHello),
             value if value == Self::ClientAuth.as_u8() => Ok(Self::ClientAuth),
-            value if value == Self::HandshakeComplete.as_u8() => {
-                Ok(Self::HandshakeComplete)
-            }
+            value if value == Self::HandshakeComplete.as_u8() => Ok(Self::HandshakeComplete),
             value => Err(ProtocolError::UnknownMessageType(value)),
         }
     }
@@ -365,10 +363,7 @@ mod tests {
         assert_eq!(MessageType::try_from(4), Ok(MessageType::ServerHello));
 
         assert_eq!(MessageType::try_from(5), Ok(MessageType::ClientAuth));
-        assert_eq!(
-            MessageType::try_from(6),
-            Ok(MessageType::HandshakeComplete)
-        );
+        assert_eq!(MessageType::try_from(6), Ok(MessageType::HandshakeComplete));
     }
 
     #[test]

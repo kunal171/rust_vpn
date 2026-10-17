@@ -28,7 +28,6 @@ pub enum HandshakeTransportError {
     UnexpectedCounter {
         received: u64,
     },
-
 }
 
 impl fmt::Display for HandshakeTransportError {
