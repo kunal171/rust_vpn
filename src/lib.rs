@@ -3,6 +3,8 @@
 //! Keeping shared types and constants in the library avoids duplicating them
 //! across the binaries and lets integration tests import them.
 
+/// Authenticated X25519 and Ed25519 handshake state transitions.
+pub mod authenticated_handshake;
 /// IPv4 networks in CIDR notation, used as a peer's allowed source addresses.
 pub mod cidr;
 /// Canonical transcript hashed and authenticated during VPN handshakes.

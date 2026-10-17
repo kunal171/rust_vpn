@@ -11,6 +11,11 @@ use crate::key_exchange::PUBLIC_KEY_LENGTH;
 
 /// Prevents a signature from being valid in another protocol or context.
 const TRANSCRIPT_DOMAIN: &[u8] = b"rust_vpn authenticated handshake v1";
+
+const SERVER_AUTH_DOMAIN: &[u8] = b"rust_vpn server authentication v1";
+
+const CLIENT_AUTH_DOMAIN: &[u8] = b"rust_vpn client authentication v1";
+
 pub const CLIENT_HELLO_LENGTH: usize = PUBLIC_KEY_LENGTH;
 pub const SERVER_HELLO_LENGTH: usize = PUBLIC_KEY_LENGTH + IDENTITY_SIGNATURE_LENGTH;
 
@@ -101,6 +106,24 @@ impl HandshakeTranscript {
         // information about which peer supplied which public key.
         hasher.update(self.client_ephemeral_public);
         hasher.update(self.server_ephemeral_public);
+
+        hasher.finalize().into()
+    }
+
+    pub fn server_authentication_hash(&self) -> [u8; 32] {
+        self.authentication_hash(SERVER_AUTH_DOMAIN)
+    }
+
+    pub fn client_authentication_hash(&self) -> [u8; 32] {
+        self.authentication_hash(CLIENT_AUTH_DOMAIN)
+    }
+
+    fn authentication_hash(&self, domain: &[u8]) -> [u8; 32] {
+        let transcript_hash = self.hash();
+        let mut hasher = Sha256::new();
+
+        hasher.update(domain);
+        hasher.update(transcript_hash);
 
         hasher.finalize().into()
     }
@@ -373,5 +396,16 @@ mod tests {
 
         assert_eq!(decoded.ephemeral_public_key(), public_key);
         assert_eq!(decoded.signature(), signature);
+    }
+
+    #[test]
+    fn client_and_server_authentication_hashes_differ() {
+        let transcript =
+            HandshakeTranscript::new(7, [1; PUBLIC_KEY_LENGTH], [2; PUBLIC_KEY_LENGTH]);
+
+        assert_ne!(
+            transcript.client_authentication_hash(),
+            transcript.server_authentication_hash()
+        );
     }
 }
