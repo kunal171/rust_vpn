@@ -30,6 +30,8 @@ pub enum MessageType {
     Acknowledgment = 2,
     /// Starts a handshake by carrying the client's ephemeral public key.
     ClientHello = 3,
+    ServerHello = 4,
+    ClientAuth = 5,
 }
 
 /// One logical message exchanged between VPN peers.
@@ -288,6 +290,8 @@ impl TryFrom<u8> for MessageType {
             value if value == Self::Data.as_u8() => Ok(Self::Data),
             value if value == Self::Acknowledgment.as_u8() => Ok(Self::Acknowledgment),
             value if value == Self::ClientHello.as_u8() => Ok(Self::ClientHello),
+            value if value == Self::ServerHello.as_u8() => Ok(Self::ServerHello),
+            value if value == Self::ClientAuth.as_u8() => Ok(Self::ClientAuth),
             value => Err(ProtocolError::UnknownMessageType(value)),
         }
     }
@@ -340,6 +344,8 @@ mod tests {
         assert_eq!(MessageType::Data.as_u8(), 1);
         assert_eq!(MessageType::Acknowledgment.as_u8(), 2);
         assert_eq!(MessageType::ClientHello.as_u8(), 3);
+        assert_eq!(MessageType::ServerHello.as_u8(), 4);
+        assert_eq!(MessageType::ClientAuth.as_u8(), 5);
     }
 
     #[test]
@@ -349,6 +355,10 @@ mod tests {
         assert_eq!(MessageType::try_from(2), Ok(MessageType::Acknowledgment));
 
         assert_eq!(MessageType::try_from(3), Ok(MessageType::ClientHello));
+
+        assert_eq!(MessageType::try_from(4), Ok(MessageType::ServerHello));
+
+        assert_eq!(MessageType::try_from(5), Ok(MessageType::ClientAuth));
     }
 
     #[test]

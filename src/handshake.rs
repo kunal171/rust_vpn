@@ -6,11 +6,13 @@
 use sha2::{Digest, Sha256};
 use std::{error::Error, fmt};
 
+use crate::identity::IDENTITY_SIGNATURE_LENGTH;
 use crate::key_exchange::PUBLIC_KEY_LENGTH;
 
 /// Prevents a signature from being valid in another protocol or context.
 const TRANSCRIPT_DOMAIN: &[u8] = b"rust_vpn authenticated handshake v1";
 pub const CLIENT_HELLO_LENGTH: usize = PUBLIC_KEY_LENGTH;
+pub const SERVER_HELLO_LENGTH: usize = PUBLIC_KEY_LENGTH + IDENTITY_SIGNATURE_LENGTH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HandshakeTranscript {
@@ -19,16 +21,40 @@ pub struct HandshakeTranscript {
     server_ephemeral_public: [u8; PUBLIC_KEY_LENGTH],
 }
 
+pub const CLIENT_AUTH_LENGTH: usize = IDENTITY_SIGNATURE_LENGTH;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientAuth {
+    signature: [u8; IDENTITY_SIGNATURE_LENGTH],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientHello {
     ephemeral_public_key: [u8; PUBLIC_KEY_LENGTH],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerHello {
+    ephemeral_public_key: [u8; PUBLIC_KEY_LENGTH],
+    signature: [u8; IDENTITY_SIGNATURE_LENGTH],
 }
 
 /// Errors produced while decoding peer-controlled handshake messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandshakeError {
     /// A ClientHello must contain exactly one 32-byte X25519 public key.
-    InvalidClientHelloLength { expected: usize, actual: usize },
+    InvalidClientHelloLength {
+        expected: usize,
+        actual: usize,
+    },
+    InvalidClientAuthLength {
+        expected: usize,
+        actual: usize,
+    },
+    InvalidServerHelloLength {
+        expected: usize,
+        actual: usize,
+    },
 }
 
 impl fmt::Display for HandshakeError {
@@ -37,6 +63,14 @@ impl fmt::Display for HandshakeError {
             Self::InvalidClientHelloLength { expected, actual } => write!(
                 formatter,
                 "ClientHello contains {actual} bytes, but exactly {expected} are required"
+            ),
+            Self::InvalidClientAuthLength { expected, actual } => write!(
+                formatter,
+                "ClientAuth contains {actual} bytes, but exactly {expected} are required"
+            ),
+            Self::InvalidServerHelloLength { expected, actual } => write!(
+                formatter,
+                "ServerHello contains {actual} bytes, but exactly {expected} are required"
             ),
         }
     }
@@ -106,9 +140,89 @@ impl ClientHello {
     }
 }
 
+impl ServerHello {
+    pub const fn new(
+        ephemeral_public_key: [u8; PUBLIC_KEY_LENGTH],
+        signature: [u8; IDENTITY_SIGNATURE_LENGTH],
+    ) -> Self {
+        Self {
+            ephemeral_public_key,
+            signature,
+        }
+    }
+
+    pub const fn ephemeral_public_key(&self) -> [u8; PUBLIC_KEY_LENGTH] {
+        self.ephemeral_public_key
+    }
+
+    pub const fn signature(&self) -> [u8; IDENTITY_SIGNATURE_LENGTH] {
+        self.signature
+    }
+
+    pub fn encode(&self) -> [u8; SERVER_HELLO_LENGTH] {
+        let mut bytes = [0_u8; SERVER_HELLO_LENGTH];
+
+        bytes[..PUBLIC_KEY_LENGTH].copy_from_slice(&self.ephemeral_public_key);
+
+        bytes[PUBLIC_KEY_LENGTH..].copy_from_slice(&self.signature);
+
+        bytes
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, HandshakeError> {
+        if bytes.len() != SERVER_HELLO_LENGTH {
+            return Err(HandshakeError::InvalidServerHelloLength {
+                expected: SERVER_HELLO_LENGTH,
+                actual: bytes.len(),
+            });
+        }
+
+        let mut ephemeral_public_key = [0_u8; PUBLIC_KEY_LENGTH];
+        ephemeral_public_key.copy_from_slice(&bytes[..PUBLIC_KEY_LENGTH]);
+
+        let mut signature = [0_u8; IDENTITY_SIGNATURE_LENGTH];
+        signature.copy_from_slice(&bytes[PUBLIC_KEY_LENGTH..]);
+
+        Ok(Self::new(ephemeral_public_key, signature))
+    }
+}
+
+impl ClientAuth {
+    pub const fn new(signature: [u8; IDENTITY_SIGNATURE_LENGTH]) -> Self {
+        Self { signature }
+    }
+
+    pub const fn signature(&self) -> [u8; IDENTITY_SIGNATURE_LENGTH] {
+        self.signature
+    }
+
+    pub const fn encode(&self) -> [u8; CLIENT_AUTH_LENGTH] {
+        self.signature
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, HandshakeError> {
+        if bytes.len() != CLIENT_AUTH_LENGTH {
+            return Err(HandshakeError::InvalidClientAuthLength {
+                expected: CLIENT_AUTH_LENGTH,
+                actual: bytes.len(),
+            });
+        }
+
+        let mut signature = [0_u8; IDENTITY_SIGNATURE_LENGTH];
+        signature.copy_from_slice(bytes);
+
+        Ok(Self::new(signature))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CLIENT_HELLO_LENGTH, ClientHello, HandshakeError, HandshakeTranscript};
+    use super::{
+        CLIENT_AUTH_LENGTH, CLIENT_HELLO_LENGTH, ClientAuth, ClientHello, HandshakeError,
+        HandshakeTranscript, SERVER_HELLO_LENGTH, ServerHello,
+    };
+    use crate::identity::IDENTITY_SIGNATURE_LENGTH;
+    use crate::key_exchange::PUBLIC_KEY_LENGTH;
 
     #[test]
     fn identical_inputs_produce_identical_hashes() {
@@ -193,5 +307,71 @@ mod tests {
             0xff
         );
         assert_eq!(decoded.ephemeral_public_key(), key);
+    }
+
+    #[test]
+    fn client_auth_round_trip_preserves_the_signature() {
+        let signature = [0xa5; CLIENT_AUTH_LENGTH];
+        let encoded = ClientAuth::new(signature).encode();
+
+        let decoded = ClientAuth::decode(&encoded).unwrap();
+
+        assert_eq!(decoded.signature(), signature);
+    }
+
+    #[test]
+    fn rejects_a_truncated_client_auth() {
+        let bytes = [0_u8; CLIENT_AUTH_LENGTH - 1];
+
+        assert_eq!(
+            ClientAuth::decode(&bytes),
+            Err(HandshakeError::InvalidClientAuthLength {
+                expected: CLIENT_AUTH_LENGTH,
+                actual: CLIENT_AUTH_LENGTH - 1,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_client_auth_with_trailing_data() {
+        let bytes = [0_u8; CLIENT_AUTH_LENGTH + 1];
+
+        assert_eq!(
+            ClientAuth::decode(&bytes),
+            Err(HandshakeError::InvalidClientAuthLength {
+                expected: CLIENT_AUTH_LENGTH,
+                actual: CLIENT_AUTH_LENGTH + 1,
+            })
+        );
+    }
+
+    #[test]
+    fn client_auth_preserves_binary_signature_bytes() {
+        let mut signature = [0x55; CLIENT_AUTH_LENGTH];
+
+        signature[0] = 0x00;
+        signature[CLIENT_AUTH_LENGTH - 1] = 0xff;
+
+        let encoded = ClientAuth::new(signature).encode();
+        let decoded = ClientAuth::decode(&encoded).unwrap();
+
+        assert_eq!(decoded.signature()[0], 0x00);
+        assert_eq!(decoded.signature()[CLIENT_AUTH_LENGTH - 1], 0xff);
+        assert_eq!(decoded.signature(), signature);
+    }
+
+    #[test]
+    fn server_hello_round_trip_preserves_all_fields() {
+        let public_key = [0x42; PUBLIC_KEY_LENGTH];
+        let signature = [0xa5; IDENTITY_SIGNATURE_LENGTH];
+
+        let encoded = ServerHello::new(public_key, signature).encode();
+
+        assert_eq!(encoded.len(), SERVER_HELLO_LENGTH);
+
+        let decoded = ServerHello::decode(&encoded).unwrap();
+
+        assert_eq!(decoded.ephemeral_public_key(), public_key);
+        assert_eq!(decoded.signature(), signature);
     }
 }
