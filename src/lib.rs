@@ -23,6 +23,8 @@ pub mod protocol;
 pub mod toy_crypto;
 /// UDP addresses, buffer sizes, timeouts, and temporary transport constants.
 pub mod transport;
+/// Authenticated handshake exchange over a connected UDP socket.
+pub mod udp_handshake;
 
 /// Identifies which side of the client-server example is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
