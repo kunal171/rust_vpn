@@ -76,7 +76,8 @@ docs/
 ├── phase4-linux-namespaces.md
 ├── phase6-tun-over-udp.md
 ├── phase7-routing-nat.md
-└── phase8-9-cryptography-guide.md
+├── phase8-9-cryptography-guide.md
+└── phase10-handshake-integration.md
 scripts/
 ├── netns-direct.sh
 ├── netns-bridge.sh
@@ -158,6 +159,7 @@ sudo ip netns exec rvpnr-client ping -c 3 10.200.4.2
 - [Phase 6: TUN over UDP](docs/phase6-tun-over-udp.md)
 - [Phase 7: routing, NAT, and allowed IPs](docs/phase7-routing-nat.md)
 - [Phases 8 and 9: cryptography, components, and data flow](docs/phase8-9-cryptography-guide.md)
+- [Phase 10: authenticated-handshake integration](docs/phase10-handshake-integration.md)
 - `scripts/netns-direct.sh`: direct veth topology
 - `scripts/netns-bridge.sh`: bridged topology
 - `scripts/netns-routed.sh`: client, gateway, and LAN host for routing and NAT
@@ -173,9 +175,16 @@ cargo test
 
 ## Roadmap
 
-- Install the authenticated handshake's fresh session into `vpn_tunnel` and load pinned identity
-  keys from configuration
-- Add keepalives, timeouts, reconnect behavior, bounded queues, and graceful shutdown
-- Make the tunnel MTU configurable for IPv4 or IPv6 outer transport and test PMTUD
-- Add a full-tunnel mode that routes all traffic without a routing loop
-- Add DNS configuration and leak testing for full-tunnel operation
+1. Install the authenticated handshake's fresh session into `vpn_tunnel` and load pinned identity
+   keys from configuration.
+2. Add handshake retransmission, timeouts, duplicate handling, reconnect behavior, bounded queues,
+   and graceful shutdown.
+3. Add full-tunnel routing, DNS configuration, leak testing, configurable MTU, and PMTUD tests.
+4. After the classical VPN works end to end, add crypto-agile message formats and experiment with a
+   hybrid post-quantum handshake: X25519 + ML-KEM for key establishment and Ed25519 + ML-DSA for
+   peer authentication.
+
+Post-quantum work is deliberately deferred. ChaCha20-Poly1305, counters, replay protection, TUN,
+UDP, and routing can remain; the handshake messages, identity storage, transcript, key combiner,
+packet sizing, and tests will need extension. Large ML-KEM keys and ML-DSA signatures also require
+bounded handshake fragmentation rather than increasing ordinary tunnel-packet size without limits.

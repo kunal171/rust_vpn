@@ -1,8 +1,8 @@
 # Phases 8 and 9: cryptography, components, and data flow
 
 This chapter explains how the cryptographic pieces fit together. Phase 8 built and tested the
-encrypted packet path. Phase 9 is replacing Phase 8's public lab secret with fresh,
-authenticated session keys.
+encrypted packet path. Phase 9 completed a separate authenticated UDP handshake that creates fresh
+session keys. Phase 10 will connect the two paths inside `vpn_tunnel`.
 
 > This is an educational protocol, not a production-audited VPN. The handwritten modular
 > arithmetic and Diffie-Hellman code exists only to teach the ideas. The tunnel uses library
@@ -12,8 +12,8 @@ authenticated session keys.
 
 The project has two related but separate flows:
 
-1. The **handshake path** establishes who the peer is and creates fresh session keys. Phase 9 is
-   building this path.
+1. The **handshake path** establishes who the peer is and creates fresh session keys. Phase 9
+   completed this path as a tested library module.
 2. The **data path** uses those session keys to protect every IP packet. Phase 8 built this path,
    but currently supplies it with a fixed public lab secret.
 
@@ -334,6 +334,40 @@ The next integration phase still needs:
 - installation of the negotiated session ID and keys into `vpn_tunnel`;
 - executable-level integration tests for loss, reordering, reconnects, and authenticated tunnel
   traffic.
+
+## Deferred post-quantum upgrade
+
+Post-quantum cryptography is not required to finish the current learning VPN. We will first connect
+and test the classical authenticated handshake end to end. A later crypto-agility phase can add a
+hybrid design:
+
+```text
+key establishment: X25519 + ML-KEM
+peer signatures:   Ed25519 + ML-DSA
+packet protection: ChaCha20-Poly1305 remains
+```
+
+This is not a direct algorithm-name replacement. ML-KEM is a key-encapsulation mechanism, so its
+message flow differs from X25519. ML-DSA keys and signatures are much larger than Ed25519 values,
+so the current 2,048-byte frame limit cannot hold common ML-DSA signatures. The future phase must
+therefore include:
+
+- algorithm identifiers and downgrade-resistant transcript binding;
+- a reviewed combiner that feeds both classical and post-quantum shared secrets into HKDF;
+- versioned storage for both classical and post-quantum identity keys;
+- bounded fragmentation and reassembly for large handshake messages;
+- rejection tests for missing, duplicate, reordered, oversized, and modified fragments;
+- compatibility tests between classical-only and post-quantum-capable peers.
+
+The handwritten learning algorithms will not be extended into post-quantum implementations. As
+with the existing X25519 and Ed25519 operations, the project must use maintained cryptographic
+libraries and treat integration, validation, and protocol design as the learning work.
+
+Standards and migration references:
+
+- [NIST FIPS 203: ML-KEM](https://csrc.nist.gov/pubs/fips/203/final)
+- [NIST FIPS 204: ML-DSA](https://csrc.nist.gov/pubs/fips/204/final)
+- [NIST post-quantum migration FAQ](https://csrc.nist.gov/Projects/post-quantum-cryptography/faqs)
 
 Even after those learning milestones, production VPN work would require protocol review, denial-of-
 service defenses, privilege separation, key rotation, configuration hardening, and considerably
