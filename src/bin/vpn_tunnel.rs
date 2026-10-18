@@ -34,7 +34,7 @@ const USAGE: &str = "usage: vpn_tunnel <client|server> <tun-address> <bind-addre
 /// Link MTU (1500) minus outer IPv4 (20), UDP (8), frame header (16),
 /// and authentication tag (16), avoiding outer IP fragmentation.
 const TUN_MTU: u16 = 1440;
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 // Same reasoning as tun_reader: the largest possible IPv4 packet.
 const PACKET_BUFFER_SIZE: usize = 65_535;
 

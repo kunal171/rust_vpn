@@ -15,9 +15,29 @@ use crate::{
     transport::RECEIVE_BUFFER_SIZE,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandshakeStage {
+    ClientHello,
+    ServerHello,
+    ClientAuth,
+    HandshakeComplete,
+}
+
+impl fmt::Display for HandshakeStage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ClientHello => formatter.write_str("ClientHello"),
+            Self::ServerHello => formatter.write_str("ServerHello"),
+            Self::ClientAuth => formatter.write_str("ClientAuth"),
+            Self::HandshakeComplete => formatter.write_str("HandshakeComplete"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum UdpHandshakeError {
     Io(io::Error),
+    Timeout { waiting_for: HandshakeStage },
     Transport(HandshakeTransportError),
     Authentication(AuthenticatedHandshakeError),
 
@@ -38,6 +58,12 @@ impl fmt::Display for UdpHandshakeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "UDP handshake I/O failed: {error}"),
+            Self::Timeout { waiting_for } => {
+                write!(
+                    formatter,
+                    "UDP handshake timed out waiting for {waiting_for}"
+                )
+            }
             Self::Transport(error) => write!(formatter, "UDP handshake frame failed: {error}"),
             Self::Authentication(error) => {
                 write!(formatter, "UDP peer authentication failed: {error}")
@@ -82,6 +108,7 @@ impl Error for UdpHandshakeError {
 
             Self::UnexpectedConfirmationType { .. }
             | Self::NonEmptyConfirmation { .. }
+            | Self::Timeout { .. }
             | Self::PartialDatagram { .. } => None,
         }
     }
@@ -149,6 +176,19 @@ fn send_datagram(socket: &UdpSocket, bytes: &[u8]) -> Result<(), UdpHandshakeErr
     Ok(())
 }
 
+fn receive_datagram(
+    socket: &UdpSocket,
+    buffer: &mut [u8],
+    waiting_for: HandshakeStage,
+) -> Result<usize, UdpHandshakeError> {
+    socket.recv(buffer).map_err(|error| match error.kind() {
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+            UdpHandshakeError::Timeout { waiting_for }
+        }
+        _ => UdpHandshakeError::Io(error),
+    })
+}
+
 fn accept_confirmation(session: &mut CryptoSession, bytes: &[u8]) -> Result<(), UdpHandshakeError> {
     // Decoding validates only the generic frame structure. Do not trust any
     // decoded field until the session authenticates the complete frame.
@@ -186,7 +226,7 @@ pub fn perform_client_handshake(
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
 
     // 3. Receive ServerHello.
-    let received_length = socket.recv(&mut buffer)?;
+    let received_length = receive_datagram(socket, &mut buffer, HandshakeStage::ServerHello)?;
 
     let (session_id, server_hello) = decode_server_hello(&buffer[..received_length])?;
 
@@ -209,7 +249,7 @@ pub fn perform_client_handshake(
     let mut session = CryptoSession::new(session_id, SessionRole::Client, session_keys);
 
     // 7. Wait for the server's encrypted confirmation.
-    let received_length = socket.recv(&mut buffer)?;
+    let received_length = receive_datagram(socket, &mut buffer, HandshakeStage::HandshakeComplete)?;
 
     // 8. Authenticate and decrypt before checking the confirmation type and
     // payload. Success also records server counter 1 in the replay window.
@@ -227,7 +267,7 @@ pub fn perform_server_handshake(
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
 
     // 1. Receive and validate ClientHello.
-    let received_length = socket.recv(&mut buffer)?;
+    let received_length = receive_datagram(socket, &mut buffer, HandshakeStage::ClientHello)?;
 
     let client_hello = decode_client_hello(&buffer[..received_length])?;
 
@@ -244,7 +284,7 @@ pub fn perform_server_handshake(
     send_datagram(socket, &server_hello_bytes)?;
 
     // 5. Receive ClientAuth.
-    let received_length = socket.recv(&mut buffer)?;
+    let received_length = receive_datagram(socket, &mut buffer, HandshakeStage::ClientAuth)?;
 
     let client_auth = decode_client_auth(&buffer[..received_length], session_id)?;
 
@@ -274,7 +314,8 @@ pub fn perform_server_handshake(
 #[cfg(test)]
 mod tests {
     use super::{
-        UdpHandshakeError, accept_confirmation, perform_client_handshake, perform_server_handshake,
+        HandshakeStage, UdpHandshakeError, accept_confirmation, perform_client_handshake,
+        perform_server_handshake, receive_datagram,
     };
     use crate::{
         identity::IdentityKeyPair,
@@ -285,6 +326,29 @@ mod tests {
         },
     };
     use std::{net::UdpSocket, thread, time::Duration};
+
+    #[test]
+    fn timeout_error_names_the_waiting_handshake_stage() {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(1)))
+            .unwrap();
+        let mut buffer = [0_u8; 1];
+
+        let error =
+            receive_datagram(&socket, &mut buffer, HandshakeStage::ServerHello).unwrap_err();
+
+        assert!(matches!(
+            error,
+            UdpHandshakeError::Timeout {
+                waiting_for: HandshakeStage::ServerHello
+            }
+        ));
+        assert_eq!(
+            error.to_string(),
+            "UDP handshake timed out waiting for ServerHello"
+        );
+    }
 
     #[test]
     fn connected_udp_peers_complete_an_authenticated_handshake() {
