@@ -34,6 +34,15 @@ vpn_tunnel data loops
 The tunnel must not process ordinary `Data` frames until authentication and key confirmation have
 succeeded. If the handshake fails, no traffic session is installed.
 
+## Current status
+
+The identity and session-installation slices are implemented. `vpn_keygen` creates raw Ed25519
+private/public files without overwriting existing paths, `vpn_tunnel` loads the local private key
+and pinned peer public key, and a five-second handshake timeout prevents an absent peer from
+blocking forever. Loopback executable checks confirm that matching identities establish a session
+and a wrong client identity is rejected before TUN creation. The remaining work is the privileged
+namespace ping and packet-capture verification.
+
 ## Planned implementation slices
 
 ### 1. Identity input

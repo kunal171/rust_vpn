@@ -10,7 +10,8 @@ Phase 7 is complete: routing and NAT through the tunnel, with allowed source add
 Phase 8 is complete: the cryptographic foundations are tested and connected to the tunnel through
 a deliberately insecure, reproducible lab key. Phase 9 is complete: an authenticated X25519 and
 Ed25519 handshake runs over UDP, derives fresh directional keys, and returns a confirmed
-`CryptoSession`. Connecting that handshake to `vpn_tunnel` is the next phase.
+`CryptoSession`. Phase 10 is in progress: `vpn_tunnel` now loads provisioned identities, performs
+that handshake, and installs its fresh confirmed session before starting the data loops.
 
 Working foundations:
 
@@ -33,13 +34,12 @@ Working foundations:
   sessions
 - An authenticated UDP handshake with ephemeral X25519 keys, pinned Ed25519 peer identities, and an
   encrypted `HandshakeComplete` key-confirmation message
+- Installation of the authenticated handshake session into the real TUN-to-UDP tunnel
 
-The `vpn_tunnel` executable still derives its keys from a public constant. This proves the encrypted
-data path, directional keys, authentication, and replay protection, but provides no secrecy or peer
-authentication. Restarting a peer also reuses counters with the same key, which violates AEAD nonce
-uniqueness. The Phase 9 handshake is implemented and tested as a separate module; it must be wired
-into `vpn_tunnel` before the executable can protect actual traffic with fresh authenticated keys.
-The hand-written Diffie-Hellman module is for learning only and is never used by the tunnel.
+The public Phase 8 lab key is no longer used by `vpn_tunnel`. Each launch performs an authenticated
+ephemeral handshake and installs fresh keys and a fresh session ID. Phase 10 still needs namespace
+verification, failure-path tests, and documented operational behavior before it is complete. The
+hand-written Diffie-Hellman module is for learning only and is never used by the tunnel.
 
 ## Layout
 
@@ -67,6 +67,7 @@ src/
 └── bin/
     ├── tun_reader.rs
     ├── vpn_client.rs
+    ├── vpn_keygen.rs
     ├── vpn_server.rs
     └── vpn_tunnel.rs
 tests/
@@ -112,23 +113,33 @@ ping -c 3 10.210.0.2
 
 ## Tunnel demo
 
-`vpn_tunnel` connects a TUN interface to one UDP peer and protects its frames with a public lab key.
-The encryption integration is observable, but the public and reused key means sensitive traffic is
-not safe. Run one peer in each namespace of the direct lab:
+Provision one long-term identity for each peer. The private files are created with mode `0600`, and
+the key generator refuses to overwrite existing files:
+
+```bash
+mkdir -p keys
+cargo run --bin vpn_keygen -- keys/client.key keys/client.pub
+cargo run --bin vpn_keygen -- keys/server.key keys/server.pub
+```
+
+`vpn_tunnel` loads its private identity and the other peer's pinned public identity. It completes
+the authenticated handshake before creating the TUN data path. Run one peer in each namespace of
+the direct lab:
 
 ```bash
 cargo build
 sudo ./scripts/netns-direct.sh up
 # Terminal 1:
-sudo ip netns exec rvpn-client ./target/debug/vpn_tunnel client 10.210.0.1 10.200.1.1:51820 10.200.1.2:51820 10.210.0.2/32
+sudo ip netns exec rvpn-client ./target/debug/vpn_tunnel client 10.210.0.1 10.200.1.1:51820 10.200.1.2:51820 10.210.0.2/32 keys/client.key keys/server.pub
 # Terminal 2:
-sudo ip netns exec rvpn-server ./target/debug/vpn_tunnel server 10.210.0.2 10.200.1.2:51820 10.200.1.1:51820 10.210.0.1/32
+sudo ip netns exec rvpn-server ./target/debug/vpn_tunnel server 10.210.0.2 10.200.1.2:51820 10.200.1.1:51820 10.210.0.1/32 keys/server.key keys/client.pub
 # Terminal 3:
 sudo ip netns exec rvpn-client ping -c 3 10.210.0.2
 ```
 
-The arguments are the cryptographic role, TUN address, local UDP bind address, peer UDP address, and
-comma-separated networks the peer may send from. The ping replies come from the kernel in
+The arguments are the cryptographic role, TUN address, local UDP bind address, peer UDP address,
+comma-separated networks the peer may send from, local private-key file, and pinned peer public-key
+file. The ping replies come from the kernel in
 `rvpn-server`, carried back through the encrypted tunnel. The 1440-byte TUN MTU accounts for the
 outer IPv4 and UDP headers, frame header, and authentication tag. Remove the lab with
 `sudo ./scripts/netns-direct.sh down`.
@@ -141,9 +152,9 @@ The routed lab adds a LAN host behind the server, which the client reaches throu
 cargo build
 sudo ./scripts/netns-routed.sh up
 # Terminal 1:
-sudo ip netns exec rvpnr-client ./target/debug/vpn_tunnel client 10.210.0.1 10.200.3.1:51820 10.200.3.2:51820 10.210.0.2/32,10.200.4.0/24
+sudo ip netns exec rvpnr-client ./target/debug/vpn_tunnel client 10.210.0.1 10.200.3.1:51820 10.200.3.2:51820 10.210.0.2/32,10.200.4.0/24 keys/client.key keys/server.pub
 # Terminal 2:
-sudo ip netns exec rvpnr-server ./target/debug/vpn_tunnel server 10.210.0.2 10.200.3.2:51820 10.200.3.1:51820 10.210.0.1/32
+sudo ip netns exec rvpnr-server ./target/debug/vpn_tunnel server 10.210.0.2 10.200.3.2:51820 10.200.3.1:51820 10.210.0.1/32 keys/server.key keys/client.pub
 # Terminal 3:
 sudo ./scripts/netns-routed.sh route
 sudo ./scripts/netns-routed.sh nat
@@ -175,9 +186,8 @@ cargo test
 
 ## Roadmap
 
-1. Install the authenticated handshake's fresh session into `vpn_tunnel` and load pinned identity
-   keys from configuration.
-2. Add handshake retransmission, timeouts, duplicate handling, reconnect behavior, bounded queues,
+1. Verify the authenticated tunnel and wrong-identity failure paths in Linux namespaces.
+2. Add handshake retransmission, duplicate handling, reconnect behavior, bounded queues,
    and graceful shutdown.
 3. Add full-tunnel routing, DNS configuration, leak testing, configurable MTU, and PMTUD tests.
 4. After the classical VPN works end to end, add crypto-agile message formats and experiment with a

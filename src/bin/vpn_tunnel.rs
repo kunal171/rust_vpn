@@ -6,40 +6,35 @@
 //! same program with mirrored roles and addresses.
 
 use rust_vpn::cidr::{CidrError, Ipv4Cidr};
+use rust_vpn::identity::{IDENTITY_PUBLIC_KEY_LENGTH, IDENTITY_SECRET_KEY_LENGTH, IdentityKeyPair};
 use rust_vpn::ipv4::decode_ipv4_header;
 use rust_vpn::protocol::{Frame, MessageType};
 use rust_vpn::toy_crypto::{
-    key_derivation::{SessionRole, derive_session_keys},
-    session::{CryptoReceiver, CryptoSender, CryptoSession},
+    key_derivation::SessionRole,
+    session::{CryptoReceiver, CryptoSender},
 };
 use rust_vpn::transport::RECEIVE_BUFFER_SIZE;
+use rust_vpn::udp_handshake::{perform_client_handshake, perform_server_handshake};
 use std::env;
 use std::error::Error;
+use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::path::Path;
 use std::thread;
+use std::time::Duration;
 use tun::{Configuration, Layer, Reader, Writer};
 
 const TUN_NAME: &str = "rvpn0";
 const TUN_NETMASK: &str = "255.255.255.0";
 
 const USAGE: &str = "usage: vpn_tunnel <client|server> <tun-address> <bind-address> \
-     <peer-address> <allowed-ips>";
-
-// These public, fixed bytes make the encrypted data path reproducible while
-// learning. They provide no secrecy, peer authentication, or safe key renewal.
-// Restarting also resets the counter and therefore reuses nonces with this key.
-const LAB_SHARED_SECRET: &[u8] = b"phase-8-public-lab-secret-not-secure";
-
-// Both peers must use the same salt so HKDF derives matching directional keys.
-const LAB_SESSION_SALT: &[u8] = b"phase-8-tunnel-session";
+     <peer-address> <allowed-ips> <identity-private-key> <peer-public-key>";
 
 /// Link MTU (1500) minus outer IPv4 (20), UDP (8), frame header (16),
 /// and authentication tag (16), avoiding outer IP fragmentation.
 const TUN_MTU: u16 = 1440;
-// The fixed ID is sufficient for the one-session lab. A future handshake will
-// negotiate fresh session identity and key material.
-const SESSION_ID: u32 = 1;
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 // Same reasoning as tun_reader: the largest possible IPv4 packet.
 const PACKET_BUFFER_SIZE: usize = 65_535;
 
@@ -70,23 +65,74 @@ fn required_argument(
         .ok_or_else(|| format!("missing {name}\n{USAGE}").into())
 }
 
+/// Reads an exact-size raw key without first placing secret bytes in a heap vector.
+fn read_fixed_key<const LENGTH: usize>(path: &Path, name: &str) -> io::Result<[u8; LENGTH]> {
+    let mut file = File::open(path)?;
+    let mut key = [0_u8; LENGTH];
+
+    file.read_exact(&mut key).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} must contain exactly {LENGTH} bytes: {error}"),
+        )
+    })?;
+
+    let mut extra = [0_u8; 1];
+    if file.read(&mut extra)? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} must contain exactly {LENGTH} bytes"),
+        ));
+    }
+
+    Ok(key)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args().skip(1);
 
     let role = parse_role(&required_argument(&mut arguments, "role")?)?;
-
-    // HKDF turns the shared lab bytes into independent keys for each traffic
-    // direction. The role decides which key this peer sends and receives with.
-    let keys = derive_session_keys(LAB_SHARED_SECRET, LAB_SESSION_SALT)?;
-
-    // The sending thread owns the only send counter, while the receiving loop
-    // independently owns replay-window state for authenticated inbound packets.
-    let (sender, receiver) = CryptoSession::new(SESSION_ID, role, keys).into_split();
-
     let tun_address: Ipv4Addr = required_argument(&mut arguments, "tun-address")?.parse()?;
     let bind_address: SocketAddr = required_argument(&mut arguments, "bind-address")?.parse()?;
     let peer_address: SocketAddr = required_argument(&mut arguments, "peer-address")?.parse()?;
     let allowed_ips = parse_allowed_ips(&required_argument(&mut arguments, "allowed-ips")?)?;
+    let identity_private_path = required_argument(&mut arguments, "identity-private-key")?;
+    let peer_public_path = required_argument(&mut arguments, "peer-public-key")?;
+
+    if arguments.next().is_some() {
+        return Err(format!("too many arguments\n{USAGE}").into());
+    }
+
+    let mut identity_secret = read_fixed_key::<IDENTITY_SECRET_KEY_LENGTH>(
+        Path::new(&identity_private_path),
+        "identity private key",
+    )?;
+    let identity = IdentityKeyPair::from_secret_bytes(&mut identity_secret);
+    let peer_public_key = read_fixed_key::<IDENTITY_PUBLIC_KEY_LENGTH>(
+        Path::new(&peer_public_path),
+        "peer public key",
+    )?;
+
+    let socket = UdpSocket::bind(bind_address)?;
+    // UDP connect restricts datagrams to one network address. The handshake
+    // independently authenticates the identity pinned in peer_public_key.
+    socket.connect(peer_address)?;
+    socket.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+
+    println!("Authenticating UDP peer {peer_address} as {role:?}...");
+
+    let session = match role {
+        SessionRole::Client => perform_client_handshake(&socket, &identity, peer_public_key)?,
+        SessionRole::Server => perform_server_handshake(&socket, &identity, peer_public_key)?,
+    };
+
+    socket.set_read_timeout(None)?;
+
+    // The sending thread exclusively owns the send counter, while the receive
+    // loop owns replay state for this freshly authenticated session.
+    let (sender, receiver) = session.into_split();
+
+    println!("Authenticated UDP peer {peer_address}");
 
     let mut configuration = Configuration::default();
 
@@ -99,11 +145,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         .up();
 
     let device = tun::create(&configuration)?;
-
-    let socket = UdpSocket::bind(bind_address)?;
-    // UDP connect performs no handshake; it only fixes the peer used by
-    // send/recv. Cryptographic key agreement is also not implemented yet.
-    socket.connect(peer_address)?;
 
     println!("Created {TUN_NAME} with address {tun_address}/24");
     println!(

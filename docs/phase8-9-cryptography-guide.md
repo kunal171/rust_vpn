@@ -2,7 +2,7 @@
 
 This chapter explains how the cryptographic pieces fit together. Phase 8 built and tested the
 encrypted packet path. Phase 9 completed a separate authenticated UDP handshake that creates fresh
-session keys. Phase 10 will connect the two paths inside `vpn_tunnel`.
+session keys. Phase 10 connects the two paths inside `vpn_tunnel`.
 
 > This is an educational protocol, not a production-audited VPN. The handwritten modular
 > arithmetic and Diffie-Hellman code exists only to teach the ideas. The tunnel uses library
@@ -327,11 +327,12 @@ Phase 9 completed:
 - protected key confirmation;
 - success and rejection tests over real loopback UDP sockets and in-memory cryptographic sessions.
 
-The next integration phase still needs:
+Phase 10 has now installed the handshake result into `vpn_tunnel`. Its remaining integration checks
+are:
 
-- secure identity-key loading/storage rather than generating a new identity every launch;
-- timeouts, retransmission, duplicate-message handling, and clean failure behavior over UDP;
-- installation of the negotiated session ID and keys into `vpn_tunnel`;
+- namespace verification with provisioned identity files;
+- wrong-identity verification at the executable boundary;
+- retransmission, duplicate-message handling, and clean reconnect behavior over UDP;
 - executable-level integration tests for loss, reordering, reconnects, and authenticated tunnel
   traffic.
 
