@@ -276,13 +276,13 @@ fn udp_to_tun(
             }
         };
 
-        confirmation_cache = None;
-        
         if frame.message_type() != MessageType::Data {
             eprintln!("Ignoring unexpected {:?} frame", frame.message_type());
             continue;
         }
 
+        confirmation_cache = None;
+        
         // The peer may only send from its allowed addresses; anything else
         // would let it inject spoofed traffic into this side's network.
         let source = match decode_ipv4_header(frame.payload()) {

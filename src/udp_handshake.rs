@@ -391,7 +391,7 @@ pub fn perform_server_handshake(
     let confirmation_bytes = confirmation.encode();
 
     // 10. Send the protected confirmation.
-    send_datagram(socket, confirmation_bytes)?;
+    send_datagram(socket, &confirmation_bytes)?;
 
     let retry_cache = ServerConfirmationCache::new(
         client_auth_bytes,
