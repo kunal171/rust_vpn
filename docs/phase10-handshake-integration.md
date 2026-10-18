@@ -34,14 +34,15 @@ vpn_tunnel data loops
 The tunnel must not process ordinary `Data` frames until authentication and key confirmation have
 succeeded. If the handshake fails, no traffic session is installed.
 
-## Current status
+## Completion status
 
-The identity and session-installation slices are implemented. `vpn_keygen` creates raw Ed25519
+Phase 10 is complete. `vpn_keygen` creates raw Ed25519
 private/public files without overwriting existing paths, `vpn_tunnel` loads the local private key
 and pinned peer public key, and a five-second handshake timeout prevents an absent peer from
 blocking forever. Loopback executable checks confirm that matching identities establish a session
-and a wrong client identity is rejected before TUN creation. The remaining work is the privileged
-namespace ping and packet-capture verification.
+and a wrong client identity is rejected before TUN creation. A privileged direct-veth namespace
+test completed the authenticated handshake and successfully carried ICMP echo requests and replies
+through the negotiated session.
 
 ## Planned implementation slices
 
@@ -92,6 +93,9 @@ increasing counter, while only one receiver owns and mutates the replay window.
 Phase 10 is complete when `vpn_tunnel` no longer uses the public lab key, two namespace peers can
 authenticate and exchange tunneled traffic, incorrect identities cannot establish a session, all
 quality checks pass, and the namespace commands are documented and reproducible.
+
+All of these criteria are satisfied. Handshake retransmission, friendlier timeout errors, reconnect
+behavior, and packet-loss testing belong to the next reliability phase.
 
 This remains an educational VPN. Reliability, full-tunnel DNS/routing, operational key management,
 and post-quantum experiments are later milestones.

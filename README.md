@@ -10,8 +10,9 @@ Phase 7 is complete: routing and NAT through the tunnel, with allowed source add
 Phase 8 is complete: the cryptographic foundations are tested and connected to the tunnel through
 a deliberately insecure, reproducible lab key. Phase 9 is complete: an authenticated X25519 and
 Ed25519 handshake runs over UDP, derives fresh directional keys, and returns a confirmed
-`CryptoSession`. Phase 10 is in progress: `vpn_tunnel` now loads provisioned identities, performs
-that handshake, and installs its fresh confirmed session before starting the data loops.
+`CryptoSession`. Phase 10 is complete: `vpn_tunnel` loads provisioned identities, performs that
+handshake, and installs its fresh confirmed session before starting the data loops. The
+authenticated tunnel has been verified with an end-to-end namespace ping.
 
 Working foundations:
 
@@ -37,8 +38,8 @@ Working foundations:
 - Installation of the authenticated handshake session into the real TUN-to-UDP tunnel
 
 The public Phase 8 lab key is no longer used by `vpn_tunnel`. Each launch performs an authenticated
-ephemeral handshake and installs fresh keys and a fresh session ID. Phase 10 still needs namespace
-verification, failure-path tests, and documented operational behavior before it is complete. The
+ephemeral handshake and installs fresh keys and a fresh session ID. Matching identities establish
+the tunnel, while an incorrectly pinned identity is rejected before TUN traffic begins. The
 hand-written Diffie-Hellman module is for learning only and is never used by the tunnel.
 
 ## Layout
@@ -186,11 +187,10 @@ cargo test
 
 ## Roadmap
 
-1. Verify the authenticated tunnel and wrong-identity failure paths in Linux namespaces.
-2. Add handshake retransmission, duplicate handling, reconnect behavior, bounded queues,
+1. Add handshake retransmission, duplicate handling, reconnect behavior, bounded queues,
    and graceful shutdown.
-3. Add full-tunnel routing, DNS configuration, leak testing, configurable MTU, and PMTUD tests.
-4. After the classical VPN works end to end, add crypto-agile message formats and experiment with a
+2. Add full-tunnel routing, DNS configuration, leak testing, configurable MTU, and PMTUD tests.
+3. After the classical VPN works end to end, add crypto-agile message formats and experiment with a
    hybrid post-quantum handshake: X25519 + ML-KEM for key establishment and Ed25519 + ML-DSA for
    peer authentication.
 
