@@ -26,6 +26,7 @@ pub mod transport;
 /// Authenticated handshake exchange over a connected UDP socket.
 pub mod udp_handshake;
 
+pub mod keepalive;
 pub mod tunnel_lifecycle;
 
 /// Identifies which side of the client-server example is running.
