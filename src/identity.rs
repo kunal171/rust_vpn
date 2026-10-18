@@ -6,12 +6,14 @@
 use std::{error::Error, fmt};
 
 use ed25519_dalek::{
-    PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH, Signature, Signer, SigningKey, VerifyingKey,
+    PUBLIC_KEY_LENGTH, SECRET_KEY_LENGTH, SIGNATURE_LENGTH, Signature, Signer, SigningKey,
+    VerifyingKey,
 };
 use zeroize::Zeroize;
 
 pub const IDENTITY_PUBLIC_KEY_LENGTH: usize = PUBLIC_KEY_LENGTH;
 pub const IDENTITY_SIGNATURE_LENGTH: usize = SIGNATURE_LENGTH;
+pub const IDENTITY_SECRET_KEY_LENGTH: usize = SECRET_KEY_LENGTH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityError {
@@ -37,16 +39,11 @@ pub struct IdentityKeyPair {
 impl IdentityKeyPair {
     /// Generates an identity during peer provisioning, not for every handshake.
     pub fn generate() -> Result<Self, getrandom::Error> {
-        let mut secret_bytes = [0_u8; 32];
+        let mut secret_bytes = [0_u8; IDENTITY_SECRET_KEY_LENGTH];
 
         getrandom::fill(&mut secret_bytes)?;
 
-        let signing_key = SigningKey::from_bytes(&secret_bytes);
-
-        // SigningKey owns its copy, so erase the temporary stack buffer.
-        secret_bytes.zeroize();
-
-        Ok(Self { signing_key })
+        Ok(Self::from_secret_bytes(&mut secret_bytes))
     }
 
     pub fn public_key(&self) -> [u8; IDENTITY_PUBLIC_KEY_LENGTH] {
@@ -55,6 +52,22 @@ impl IdentityKeyPair {
 
     pub fn sign(&self, message: &[u8]) -> [u8; IDENTITY_SIGNATURE_LENGTH] {
         self.signing_key.sign(message).to_bytes()
+    }
+
+    /// Reconstructs an identity and erases the caller-owned temporary buffer.
+    pub fn from_secret_bytes(secret_bytes: &mut [u8; IDENTITY_SECRET_KEY_LENGTH]) -> Self {
+        let signing_key = SigningKey::from_bytes(secret_bytes);
+
+        // SigningKey owns its copy, so erase our temporary copy.
+        secret_bytes.zeroize();
+
+        Self { signing_key }
+    }
+
+    /// Copies the private seed for provisioning only. The caller must erase
+    /// the returned buffer immediately after storing it securely.
+    pub fn secret_key_bytes(&self) -> [u8; IDENTITY_SECRET_KEY_LENGTH] {
+        self.signing_key.to_bytes()
     }
 }
 
@@ -75,7 +88,7 @@ pub fn verify_signature(
 
 #[cfg(test)]
 mod tests {
-    use super::{IdentityError, IdentityKeyPair, verify_signature};
+    use super::{IDENTITY_SECRET_KEY_LENGTH, IdentityError, IdentityKeyPair, verify_signature};
 
     #[test]
     fn verifies_a_signature_from_the_expected_identity() {
@@ -111,6 +124,27 @@ mod tests {
         assert_eq!(
             verify_signature(expected_peer.public_key(), message, attacker_signature),
             Err(IdentityError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn reconstructs_the_same_identity_from_the_same_secret() {
+        let mut first_secret = [0x42; IDENTITY_SECRET_KEY_LENGTH];
+        let mut second_secret = first_secret;
+
+        let first = IdentityKeyPair::from_secret_bytes(&mut first_secret);
+        let second = IdentityKeyPair::from_secret_bytes(&mut second_secret);
+
+        assert_eq!(first_secret, [0_u8; IDENTITY_SECRET_KEY_LENGTH]);
+        assert_eq!(second_secret, [0_u8; IDENTITY_SECRET_KEY_LENGTH]);
+        assert_eq!(first.public_key(), second.public_key());
+
+        let message = b"stable identity";
+        let signature = first.sign(message);
+
+        assert_eq!(
+            verify_signature(second.public_key(), message, signature),
+            Ok(())
         );
     }
 }
