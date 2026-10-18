@@ -319,10 +319,6 @@ pub fn perform_client_handshake(
         expected_server_identity,
     )?;
 
-    // 5. Send ClientAuth.
-    let client_auth_bytes = encode_client_auth(session_id, client_auth)?;
-
-    send_datagram(socket, &client_auth_bytes)?;
 
     // 6. Turn the derived keys into a stateful session.
     let (session_id, session_keys) = result.into_parts();
@@ -344,7 +340,7 @@ pub fn perform_server_handshake(
     socket: &UdpSocket,
     server_identity: &IdentityKeyPair,
     expected_client_identity: [u8; IDENTITY_PUBLIC_KEY_LENGTH],
-) -> Result<CryptoSession, UdpHandshakeError> {
+) -> Result<(CryptoSession, ServerConfirmationCache), UdpHandshakeError> {
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
 
     // 1. Receive and validate ClientHello.
@@ -374,6 +370,8 @@ pub fn perform_server_handshake(
         session_id,
     )?;
 
+    let client_auth_bytes = encode_client_auth(session_id, client_auth)?;
+
     // 6. Verify the client identity.
     //
     // No CryptoSession is created unless this succeeds.
@@ -390,11 +388,53 @@ pub fn perform_server_handshake(
     // This consumes server send counter 1.
     let confirmation = session.protect(MessageType::HandshakeComplete, Vec::new())?;
 
-    // 10. Send the protected confirmation.
-    send_datagram(socket, &confirmation.encode())?;
+    let confirmation_bytes = confirmation.encode();
 
-    // Return the same session whose counter is now 2.
-    Ok(session)
+    // 10. Send the protected confirmation.
+    send_datagram(socket, confirmation_bytes)?;
+
+    let retry_cache = ServerConfirmationCache::new(
+        client_auth_bytes,
+        confirmation_bytes,
+    );
+
+    Ok((session, retry_cache))
+}
+
+pub struct ServerConfirmationCache {
+    expected_client_auth: Vec<u8>,
+    confirmation: Vec<u8>,
+    remaining_responses: usize,
+}
+
+impl ServerConfirmationCache {
+    fn new(
+        expected_client_auth: Vec<u8>,
+        confirmation: Vec<u8>,
+    ) -> Self {
+        Self {
+            expected_client_auth,
+            confirmation,
+            remaining_responses: MAX_HANDSHAKE_ATTEMPTS - 1,
+        }
+    }
+
+    pub fn response_for(
+        &mut self,
+        datagram: &[u8],
+    ) -> Option<&[u8]> {
+        if self.remaining_responses == 0 {
+            return None;
+        }
+
+        if datagram != self.expected_client_auth {
+            return None;
+        }
+
+        self.remaining_responses -= 1;
+
+        Some(&self.confirmation)
+    }
 }
 
 #[cfg(test)]
