@@ -14,7 +14,9 @@ use rust_vpn::toy_crypto::{
     session::{CryptoReceiver, CryptoSender},
 };
 use rust_vpn::transport::RECEIVE_BUFFER_SIZE;
-use rust_vpn::udp_handshake::{perform_client_handshake, perform_server_handshake};
+use rust_vpn::udp_handshake::{
+    ServerConfirmationCache, perform_client_handshake, perform_server_handshake,
+};
 use std::env;
 use std::error::Error;
 use std::fs::File;
@@ -34,7 +36,7 @@ const USAGE: &str = "usage: vpn_tunnel <client|server> <tun-address> <bind-addre
 /// Link MTU (1500) minus outer IPv4 (20), UDP (8), frame header (16),
 /// and authentication tag (16), avoiding outer IP fragmentation.
 const TUN_MTU: u16 = 1440;
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 // Same reasoning as tun_reader: the largest possible IPv4 packet.
 const PACKET_BUFFER_SIZE: usize = 65_535;
 
@@ -121,9 +123,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Authenticating UDP peer {peer_address} as {role:?}...");
 
-    let session = match role {
-        SessionRole::Client => perform_client_handshake(&socket, &identity, peer_public_key)?,
-        SessionRole::Server => perform_server_handshake(&socket, &identity, peer_public_key)?,
+    let (session, confirmation_cache) = match role {
+        SessionRole::Client => {
+            let session = perform_client_handshake(&socket, &identity, peer_public_key)?;
+
+            (session, None)
+        }
+
+        SessionRole::Server => {
+            let (session, cache) = perform_server_handshake(&socket, &identity, peer_public_key)?;
+
+            (session, Some(cache))
+        }
     };
 
     socket.set_read_timeout(None)?;
@@ -166,7 +177,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    udp_to_tun(socket, writer, &allowed_ips, receiver)?;
+    udp_to_tun(socket, writer, &allowed_ips, receiver, confirmation_cache)?;
 
     Ok(())
 }
@@ -210,6 +221,7 @@ fn udp_to_tun(
     mut writer: Writer,
     allowed_ips: &[Ipv4Cidr],
     mut receiver: CryptoReceiver,
+    mut confirmation_cache: Option<ServerConfirmationCache>,
 ) -> io::Result<()> {
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
 
@@ -220,6 +232,16 @@ fn udp_to_tun(
             Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => continue,
             Err(error) => return Err(error),
         };
+
+        if let Some(cache) = &mut confirmation_cache
+            && let Some(response) = cache.response_for(&buffer[..received_length])
+        {
+            socket.send(response)?;
+
+            println!("Resent HandshakeComplete for duplicate ClientAuth");
+
+            continue;
+        }
 
         // Structural decoding is safe before decryption, but none of these
         // peer-controlled header fields are trusted until unprotect succeeds.
@@ -248,6 +270,10 @@ fn udp_to_tun(
             eprintln!("Ignoring unexpected {:?} frame", frame.message_type());
             continue;
         }
+
+        // Authenticated data proves the client received HandshakeComplete, so
+        // the server no longer needs to answer duplicate ClientAuth messages.
+        confirmation_cache = None;
 
         // The peer may only send from its allowed addresses; anything else
         // would let it inject spoofed traffic into this side's network.

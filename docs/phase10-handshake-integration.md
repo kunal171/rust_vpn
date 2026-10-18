@@ -38,7 +38,7 @@ succeeded. If the handshake fails, no traffic session is installed.
 
 Phase 10 is complete. `vpn_keygen` creates raw Ed25519
 private/public files without overwriting existing paths, `vpn_tunnel` loads the local private key
-and pinned peer public key, and a five-second handshake timeout prevents an absent peer from
+and pinned peer public key, and a bounded handshake timeout prevents an absent peer from
 blocking forever. Loopback executable checks confirm that matching identities establish a session
 and a wrong client identity is rejected before TUN creation. A privileged direct-veth namespace
 test completed the authenticated handshake and successfully carried ICMP echo requests and replies

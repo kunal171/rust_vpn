@@ -11,8 +11,10 @@ Phase 8 is complete: the cryptographic foundations are tested and connected to t
 a deliberately insecure, reproducible lab key. Phase 9 is complete: an authenticated X25519 and
 Ed25519 handshake runs over UDP, derives fresh directional keys, and returns a confirmed
 `CryptoSession`. Phase 10 is complete: `vpn_tunnel` loads provisioned identities, performs that
-handshake, and installs its fresh confirmed session before starting the data loops. The
-authenticated tunnel has been verified with an end-to-end namespace ping.
+handshake, and installs its fresh confirmed session before starting the data loops. Phase 11 is
+complete: bounded retransmission and duplicate handling recover from lost handshake datagrams
+without regenerating cryptographic state. The authenticated tunnel has been verified with an
+end-to-end namespace ping.
 
 Working foundations:
 
@@ -36,6 +38,7 @@ Working foundations:
 - An authenticated UDP handshake with ephemeral X25519 keys, pinned Ed25519 peer identities, and an
   encrypted `HandshakeComplete` key-confirmation message
 - Installation of the authenticated handshake session into the real TUN-to-UDP tunnel
+- Bounded handshake retries with cached responses for duplicate `ClientHello` and `ClientAuth`
 
 The public Phase 8 lab key is no longer used by `vpn_tunnel`. Each launch performs an authenticated
 ephemeral handshake and installs fresh keys and a fresh session ID. Matching identities establish
@@ -79,7 +82,8 @@ docs/
 ├── phase6-tun-over-udp.md
 ├── phase7-routing-nat.md
 ├── phase8-9-cryptography-guide.md
-└── phase10-handshake-integration.md
+├── phase10-handshake-integration.md
+└── phase11-handshake-reliability.md
 scripts/
 ├── netns-direct.sh
 ├── netns-bridge.sh
@@ -172,6 +176,7 @@ sudo ip netns exec rvpnr-client ping -c 3 10.200.4.2
 - [Phase 7: routing, NAT, and allowed IPs](docs/phase7-routing-nat.md)
 - [Phases 8 and 9: cryptography, components, and data flow](docs/phase8-9-cryptography-guide.md)
 - [Phase 10: authenticated-handshake integration](docs/phase10-handshake-integration.md)
+- [Phase 11: UDP handshake reliability](docs/phase11-handshake-reliability.md)
 - `scripts/netns-direct.sh`: direct veth topology
 - `scripts/netns-bridge.sh`: bridged topology
 - `scripts/netns-routed.sh`: client, gateway, and LAN host for routing and NAT
@@ -187,8 +192,8 @@ cargo test
 
 ## Roadmap
 
-1. Add handshake retransmission, duplicate handling, reconnect behavior, bounded queues,
-   and graceful shutdown.
+1. Add an explicit tunnel lifecycle with peer-restart detection, authenticated reconnects,
+   bounded queues, and graceful shutdown.
 2. Add full-tunnel routing, DNS configuration, leak testing, configurable MTU, and PMTUD tests.
 3. After the classical VPN works end to end, add crypto-agile message formats and experiment with a
    hybrid post-quantum handshake: X25519 + ML-KEM for key establishment and Ed25519 + ML-DSA for
