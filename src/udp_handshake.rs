@@ -319,16 +319,22 @@ pub fn perform_client_handshake(
         expected_server_identity,
     )?;
 
+    // 5. Retransmit the identical ClientAuth after a timeout while waiting for
+    // the server's protected confirmation.
+    let client_auth_bytes = encode_client_auth(session_id, client_auth)?;
+    let received_length = send_and_receive_with_retry(
+        socket,
+        &client_auth_bytes,
+        &mut buffer,
+        HandshakeStage::HandshakeComplete,
+    )?;
 
     // 6. Turn the derived keys into a stateful session.
     let (session_id, session_keys) = result.into_parts();
 
     let mut session = CryptoSession::new(session_id, SessionRole::Client, session_keys);
 
-    // 7. Wait for the server's encrypted confirmation.
-    let received_length = receive_datagram(socket, &mut buffer, HandshakeStage::HandshakeComplete)?;
-
-    // 8. Authenticate and decrypt before checking the confirmation type and
+    // 7. Authenticate and decrypt before checking the confirmation type and
     // payload. Success also records server counter 1 in the replay window.
     accept_confirmation(&mut session, &buffer[..received_length])?;
 
@@ -393,10 +399,7 @@ pub fn perform_server_handshake(
     // 10. Send the protected confirmation.
     send_datagram(socket, &confirmation_bytes)?;
 
-    let retry_cache = ServerConfirmationCache::new(
-        client_auth_bytes,
-        confirmation_bytes,
-    );
+    let retry_cache = ServerConfirmationCache::new(client_auth_bytes, confirmation_bytes);
 
     Ok((session, retry_cache))
 }
@@ -408,10 +411,7 @@ pub struct ServerConfirmationCache {
 }
 
 impl ServerConfirmationCache {
-    fn new(
-        expected_client_auth: Vec<u8>,
-        confirmation: Vec<u8>,
-    ) -> Self {
+    fn new(expected_client_auth: Vec<u8>, confirmation: Vec<u8>) -> Self {
         Self {
             expected_client_auth,
             confirmation,
@@ -419,10 +419,7 @@ impl ServerConfirmationCache {
         }
     }
 
-    pub fn response_for(
-        &mut self,
-        datagram: &[u8],
-    ) -> Option<&[u8]> {
+    pub fn response_for(&mut self, datagram: &[u8]) -> Option<&[u8]> {
         if self.remaining_responses == 0 {
             return None;
         }
@@ -440,9 +437,9 @@ impl ServerConfirmationCache {
 #[cfg(test)]
 mod tests {
     use super::{
-        HandshakeStage, UdpHandshakeError, accept_confirmation, perform_client_handshake,
-        perform_server_handshake, receive_client_auth_with_duplicate_handling, receive_datagram,
-        send_and_receive_with_retry,
+        HandshakeStage, MAX_HANDSHAKE_ATTEMPTS, ServerConfirmationCache, UdpHandshakeError,
+        accept_confirmation, perform_client_handshake, perform_server_handshake,
+        receive_client_auth_with_duplicate_handling, receive_datagram, send_and_receive_with_retry,
     };
     use crate::{
         handshake::{ClientAuth, ClientHello},
@@ -626,7 +623,7 @@ mod tests {
 
         let mut client_session =
             perform_client_handshake(&client_socket, &client_identity, server_public_key).unwrap();
-        let mut server_session = server_thread.join().unwrap();
+        let (mut server_session, _) = server_thread.join().unwrap();
 
         let client_frame = client_session
             .protect(MessageType::Data, b"client packet".to_vec())
@@ -651,6 +648,37 @@ mod tests {
 
         assert_eq!(opened_by_client.message_type(), MessageType::Data);
         assert_eq!(opened_by_client.payload(), b"server packet");
+    }
+
+    #[test]
+    fn confirmation_cache_only_answers_matching_client_auth() {
+        let expected_client_auth = b"expected ClientAuth".to_vec();
+        let confirmation = b"protected HandshakeComplete".to_vec();
+        let mut cache =
+            ServerConfirmationCache::new(expected_client_auth.clone(), confirmation.clone());
+
+        assert_eq!(cache.response_for(b"changed ClientAuth"), None);
+        assert_eq!(
+            cache.response_for(&expected_client_auth),
+            Some(confirmation.as_slice())
+        );
+    }
+
+    #[test]
+    fn confirmation_cache_enforces_the_retry_limit() {
+        let expected_client_auth = b"expected ClientAuth".to_vec();
+        let confirmation = b"protected HandshakeComplete".to_vec();
+        let mut cache =
+            ServerConfirmationCache::new(expected_client_auth.clone(), confirmation.clone());
+
+        for _ in 0..MAX_HANDSHAKE_ATTEMPTS - 1 {
+            assert_eq!(
+                cache.response_for(&expected_client_auth),
+                Some(confirmation.as_slice())
+            );
+        }
+
+        assert_eq!(cache.response_for(&expected_client_auth), None);
     }
 
     fn confirmation_sessions() -> (CryptoSession, CryptoSession) {

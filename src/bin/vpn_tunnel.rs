@@ -14,7 +14,9 @@ use rust_vpn::toy_crypto::{
     session::{CryptoReceiver, CryptoSender},
 };
 use rust_vpn::transport::RECEIVE_BUFFER_SIZE;
-use rust_vpn::udp_handshake::{ServerConfirmationCache, perform_client_handshake, perform_server_handshake};
+use rust_vpn::udp_handshake::{
+    ServerConfirmationCache, perform_client_handshake, perform_server_handshake,
+};
 use std::env;
 use std::error::Error;
 use std::fs::File;
@@ -123,21 +125,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let (session, confirmation_cache) = match role {
         SessionRole::Client => {
-            let session = perform_client_handshake(
-                &socket,
-                &identity,
-                peer_public_key,
-            )?;
+            let session = perform_client_handshake(&socket, &identity, peer_public_key)?;
 
             (session, None)
         }
 
         SessionRole::Server => {
-            let (session, cache) = perform_server_handshake(
-                &socket,
-                &identity,
-                peer_public_key,
-            )?;
+            let (session, cache) = perform_server_handshake(&socket, &identity, peer_public_key)?;
 
             (session, Some(cache))
         }
@@ -239,18 +233,14 @@ fn udp_to_tun(
             Err(error) => return Err(error),
         };
 
-        if let Some(cache) = &mut confirmation_cache {
-            if let Some(response) =
-                cache.response_for(&buffer[..received_length])
-            {
-                socket.send(response)?;
+        if let Some(cache) = &mut confirmation_cache
+            && let Some(response) = cache.response_for(&buffer[..received_length])
+        {
+            socket.send(response)?;
 
-                println!(
-                    "Resent HandshakeComplete for duplicate ClientAuth"
-                );
+            println!("Resent HandshakeComplete for duplicate ClientAuth");
 
-                continue;
-            }
+            continue;
         }
 
         // Structural decoding is safe before decryption, but none of these
@@ -281,8 +271,10 @@ fn udp_to_tun(
             continue;
         }
 
+        // Authenticated data proves the client received HandshakeComplete, so
+        // the server no longer needs to answer duplicate ClientAuth messages.
         confirmation_cache = None;
-        
+
         // The peer may only send from its allowed addresses; anything else
         // would let it inject spoofed traffic into this side's network.
         let source = match decode_ipv4_header(frame.payload()) {
