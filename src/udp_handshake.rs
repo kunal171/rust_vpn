@@ -15,6 +15,8 @@ use crate::{
     transport::RECEIVE_BUFFER_SIZE,
 };
 
+const MAX_HANDSHAKE_ATTEMPTS: usize = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandshakeStage {
     ClientHello,
@@ -189,6 +191,28 @@ fn receive_datagram(
     })
 }
 
+fn send_and_receive_with_retry(
+    socket: &UdpSocket,
+    request: &[u8],
+    buffer: &mut [u8],
+    waiting_for: HandshakeStage,
+) -> Result<usize, UdpHandshakeError> {
+    let mut attempts = 0;
+
+    loop {
+        attempts += 1;
+        send_datagram(socket, request)?;
+
+        match receive_datagram(socket, buffer, waiting_for) {
+            Err(UdpHandshakeError::Timeout { .. }) if attempts < MAX_HANDSHAKE_ATTEMPTS => {
+                // Retransmit the identical encoded request. Regenerating
+                // ephemeral state would create a different transcript.
+            }
+            result => return result,
+        }
+    }
+}
+
 fn accept_confirmation(session: &mut CryptoSession, bytes: &[u8]) -> Result<(), UdpHandshakeError> {
     // Decoding validates only the generic frame structure. Do not trust any
     // decoded field until the session authenticates the complete frame.
@@ -218,15 +242,18 @@ pub fn perform_client_handshake(
     // 1. Create the client's ephemeral X25519 state.
     let (client_state, client_hello) = ClientHandshake::start();
 
-    // 2. Send ClientHello.
+    // 2. Encode ClientHello once so every retry uses the same ephemeral key
+    // and therefore the same handshake transcript.
     let client_hello_bytes = encode_client_hello(client_hello)?;
-
-    send_datagram(socket, &client_hello_bytes)?;
-
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
 
-    // 3. Receive ServerHello.
-    let received_length = receive_datagram(socket, &mut buffer, HandshakeStage::ServerHello)?;
+    // 3. Retransmit ClientHello after a timeout while waiting for ServerHello.
+    let received_length = send_and_receive_with_retry(
+        socket,
+        &client_hello_bytes,
+        &mut buffer,
+        HandshakeStage::ServerHello,
+    )?;
 
     let (session_id, server_hello) = decode_server_hello(&buffer[..received_length])?;
 
@@ -315,7 +342,7 @@ pub fn perform_server_handshake(
 mod tests {
     use super::{
         HandshakeStage, UdpHandshakeError, accept_confirmation, perform_client_handshake,
-        perform_server_handshake, receive_datagram,
+        perform_server_handshake, receive_datagram, send_and_receive_with_retry,
     };
     use crate::{
         identity::IdentityKeyPair,
@@ -348,6 +375,50 @@ mod tests {
             error.to_string(),
             "UDP handshake timed out waiting for ServerHello"
         );
+    }
+
+    #[test]
+    fn retry_resends_identical_bytes_after_the_first_datagram_is_lost() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        server_socket
+            .connect(client_socket.local_addr().unwrap())
+            .unwrap();
+        client_socket
+            .connect(server_socket.local_addr().unwrap())
+            .unwrap();
+
+        client_socket
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        server_socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let mut first = [0_u8; 32];
+            let first_length = server_socket.recv(&mut first).unwrap();
+
+            // Simulate loss by deliberately sending no response.
+            let mut second = [0_u8; 32];
+            let second_length = server_socket.recv(&mut second).unwrap();
+
+            assert_eq!(&first[..first_length], &second[..second_length]);
+            server_socket.send(b"ServerHello").unwrap();
+        });
+
+        let mut response = [0_u8; 32];
+        let response_length = send_and_receive_with_retry(
+            &client_socket,
+            b"ClientHello",
+            &mut response,
+            HandshakeStage::ServerHello,
+        )
+        .unwrap();
+
+        assert_eq!(&response[..response_length], b"ServerHello");
+        server_thread.join().unwrap();
     }
 
     #[test]
