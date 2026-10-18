@@ -2,21 +2,31 @@
 
 use std::{error::Error, fmt};
 
+/// Mutually exclusive stages in the lifetime of one tunnel process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunnelState {
+    /// Authenticating the configured peer and deriving fresh session keys.
     Handshaking,
+    /// Carrying protected tunnel traffic with an authenticated session.
     Established,
+    /// The previous session expired and a fresh handshake is required.
     Reconnecting,
+    /// Shutdown completed; this state cannot return to an active state.
     Stopped,
 }
 
+/// Events that may request a tunnel lifecycle transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunnelEvent {
+    /// A fresh authenticated handshake and key confirmation completed.
     HandshakeSucceeded,
+    /// Bounded liveness probes received no authenticated peer activity.
     PeerTimedOut,
+    /// The process was asked to terminate and release its resources.
     Shutdown,
 }
 
+/// Reports an event that is invalid for the tunnel's current state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LifecycleError {
     state: TunnelState,
@@ -36,6 +46,10 @@ impl fmt::Display for LifecycleError {
 }
 
 impl TunnelState {
+    /// Applies one event and returns the next state without hidden mutation.
+    ///
+    /// Shutdown is idempotent so cleanup code may safely request it more than
+    /// once. Every other unsupported state/event pair is rejected explicitly.
     pub fn transition(self, event: TunnelEvent) -> Result<Self, LifecycleError> {
         match (self, event) {
             (Self::Handshaking, TunnelEvent::HandshakeSucceeded) => Ok(Self::Established),

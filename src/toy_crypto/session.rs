@@ -2,10 +2,11 @@
 //!
 //! This layer joins directional keys, nonce counters, authenticated encryption,
 //! and replay protection. It assumes an authenticated handshake has already
-//! agreed on the session ID and keys; that handshake is not implemented here.
+//! agreed on the session ID and keys; the handshake remains a separate layer.
 //!
-//! A session can be split into sender and receiver halves so a future tunnel can
-//! process TUN-to-UDP and UDP-to-TUN traffic in separate tasks or threads.
+//! The tunnel splits a session into sender and receiver halves so TUN-to-UDP and
+//! UDP-to-TUN traffic can run in separate threads without sharing counter or
+//! replay-window mutation.
 
 use super::{
     key_derivation::{SessionKeys, SessionRole},

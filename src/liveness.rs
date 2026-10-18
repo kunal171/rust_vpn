@@ -5,12 +5,19 @@
 
 use std::num::NonZeroU8;
 
+/// Action selected when one keepalive interval expires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LivenessAction {
+    /// Protect and send another keepalive probe.
     SendKeepalive,
+    /// Stop using the current session and begin authenticated reconnection.
     PeerTimedOut,
 }
 
+/// Counts consecutive keepalive intervals without authenticated peer activity.
+///
+/// The tracker deliberately contains no clock. Its owner supplies interval
+/// events, which keeps the state transitions deterministic and easy to test.
 #[derive(Debug)]
 pub struct LivenessTracker {
     maximum_missed_responses: NonZeroU8,
@@ -19,6 +26,7 @@ pub struct LivenessTracker {
 }
 
 impl LivenessTracker {
+    /// Creates a tracker with a nonzero consecutive-miss limit.
     pub const fn new(maximum_missed_responses: NonZeroU8) -> Self {
         Self {
             maximum_missed_responses,
@@ -27,6 +35,11 @@ impl LivenessTracker {
         }
     }
 
+    /// Records an expired interval and selects whether to probe or time out.
+    ///
+    /// The first interval starts a probe without counting a miss. Each later
+    /// interval with no authenticated activity counts the preceding probe as
+    /// missed. Once the configured limit is reached, no new probe is requested.
     pub fn on_interval_elapsed(&mut self) -> LivenessAction {
         if self.awaiting_response {
             self.missed_responses = self.missed_responses.saturating_add(1);
@@ -41,15 +54,21 @@ impl LivenessTracker {
         LivenessAction::SendKeepalive
     }
 
+    /// Marks the peer alive after any successfully authenticated inbound frame.
+    ///
+    /// Call this only after cryptographic authentication succeeds; malformed or
+    /// forged UDP traffic must not postpone peer-timeout detection.
     pub fn record_authenticated_activity(&mut self) {
         self.missed_responses = 0;
         self.awaiting_response = false;
     }
 
+    /// Returns the current number of consecutive unanswered probes.
     pub const fn missed_responses(&self) -> u8 {
         self.missed_responses
     }
 
+    /// Reports whether the tracker has sent a probe without seeing activity.
     pub const fn is_awaiting_response(&self) -> bool {
         self.awaiting_response
     }

@@ -4,7 +4,7 @@
 //! `version | message type | session ID | packet counter | payload length`.
 //!
 //! Every peer-controlled value must be validated before use. Multi-byte
-//! integers will be encoded explicitly in network byte order (big-endian).
+//! integers are encoded explicitly in network byte order (big-endian).
 
 use std::fmt;
 
@@ -24,19 +24,20 @@ pub const MAX_PAYLOAD_SIZE: usize = MAX_FRAME_SIZE - HEADER_SIZE;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
-    /// Carries tunnel data; later this will be an inner IP packet.
+    /// Carries one inner IP packet; session protection encrypts it on the wire.
     Data = 1,
     /// Confirms receipt of a previously sent data message.
     Acknowledgment = 2,
     /// Starts a handshake by carrying the client's ephemeral public key.
     ClientHello = 3,
+    /// Carries the server's ephemeral key and identity signature.
     ServerHello = 4,
+    /// Carries the client's identity signature over the handshake transcript.
     ClientAuth = 5,
     /// Confirms that authentication succeeded and traffic keys are active.
     HandshakeComplete = 6,
     /// Checks whether an established authenticated peer is alive.
     Keepalive = 7,
-
     /// Confirms receipt of an authenticated keepalive.
     KeepaliveResponse = 8,
 }

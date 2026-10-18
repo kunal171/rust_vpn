@@ -6,18 +6,22 @@ use std::{error::Error, fmt};
 
 use crate::protocol::{Frame, MessageType};
 
+/// Tells the tunnel how to handle one authenticated keepalive control frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeepaliveAction {
+    /// Send a protected response using a fresh outbound counter.
     SendResponse,
+    /// Record that the peer answered the outstanding liveness probe.
     ResponseReceived,
 }
 
+/// Describes invalid semantics in an authenticated keepalive control frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeepaliveError {
-    UnexpectedMessageType {
-        received: MessageType,
-    },
+    /// The caller supplied a frame that is not part of the keepalive exchange.
+    UnexpectedMessageType { received: MessageType },
 
+    /// Keepalive control messages do not carry application data.
     NonEmptyPayload {
         message_type: MessageType,
         actual: usize,
@@ -49,6 +53,11 @@ impl fmt::Display for KeepaliveError {
 
 impl Error for KeepaliveError {}
 
+/// Validates an already-authenticated keepalive frame and selects its action.
+///
+/// The caller must first pass the received frame through
+/// `CryptoReceiver::unprotect`. Structural decoding alone does not prove that
+/// the peer created the message and must never refresh its liveness state.
 pub fn classify_authenticated_keepalive(frame: &Frame) -> Result<KeepaliveAction, KeepaliveError> {
     let action = match frame.message_type() {
         MessageType::Keepalive => KeepaliveAction::SendResponse,
