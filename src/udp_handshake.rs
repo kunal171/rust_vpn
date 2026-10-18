@@ -2,6 +2,7 @@ use std::{error::Error, fmt, io, net::UdpSocket};
 
 use crate::{
     authenticated_handshake::{AuthenticatedHandshakeError, ClientHandshake, ServerHandshake},
+    handshake::{ClientAuth, ClientHello},
     handshake_transport::{
         HandshakeTransportError, decode_client_auth, decode_client_hello, decode_server_hello,
         encode_client_auth, encode_client_hello, encode_server_hello,
@@ -54,6 +55,10 @@ pub enum UdpHandshakeError {
     UnexpectedConfirmationType { received: MessageType },
 
     NonEmptyConfirmation { actual: usize },
+
+    ConflictingClientHello,
+
+    TooManyDuplicateClientHellos { maximum: usize },
 }
 
 impl fmt::Display for UdpHandshakeError {
@@ -94,6 +99,13 @@ impl fmt::Display for UdpHandshakeError {
                 formatter,
                 "HandshakeComplete payload must be empty, received {actual} bytes"
             ),
+            Self::ConflictingClientHello => {
+                formatter.write_str("duplicate ClientHello changed the ephemeral public key")
+            }
+            Self::TooManyDuplicateClientHellos { maximum } => write!(
+                formatter,
+                "received more than {maximum} duplicate ClientHello messages"
+            ),
         }
     }
 }
@@ -110,6 +122,8 @@ impl Error for UdpHandshakeError {
 
             Self::UnexpectedConfirmationType { .. }
             | Self::NonEmptyConfirmation { .. }
+            | Self::ConflictingClientHello
+            | Self::TooManyDuplicateClientHellos { .. }
             | Self::Timeout { .. }
             | Self::PartialDatagram { .. } => None,
         }
@@ -213,6 +227,46 @@ fn send_and_receive_with_retry(
     }
 }
 
+fn receive_client_auth_with_duplicate_handling(
+    socket: &UdpSocket,
+    buffer: &mut [u8],
+    original_client_hello: ClientHello,
+    cached_server_hello: &[u8],
+    session_id: u32,
+) -> Result<ClientAuth, UdpHandshakeError> {
+    let maximum_duplicates = MAX_HANDSHAKE_ATTEMPTS - 1;
+    let mut duplicate_count = 0;
+
+    loop {
+        let received_length = receive_datagram(socket, buffer, HandshakeStage::ClientAuth)?;
+        let datagram = &buffer[..received_length];
+
+        match decode_client_auth(datagram, session_id) {
+            Ok(client_auth) => return Ok(client_auth),
+            Err(HandshakeTransportError::UnexpectedMessageType {
+                received: MessageType::ClientHello,
+                ..
+            }) => {
+                let duplicate = decode_client_hello(datagram)?;
+
+                if duplicate != original_client_hello {
+                    return Err(UdpHandshakeError::ConflictingClientHello);
+                }
+
+                if duplicate_count == maximum_duplicates {
+                    return Err(UdpHandshakeError::TooManyDuplicateClientHellos {
+                        maximum: maximum_duplicates,
+                    });
+                }
+
+                duplicate_count += 1;
+                send_datagram(socket, cached_server_hello)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 fn accept_confirmation(session: &mut CryptoSession, bytes: &[u8]) -> Result<(), UdpHandshakeError> {
     // Decoding validates only the generic frame structure. Do not trust any
     // decoded field until the session authenticates the complete frame.
@@ -310,10 +364,15 @@ pub fn perform_server_handshake(
 
     send_datagram(socket, &server_hello_bytes)?;
 
-    // 5. Receive ClientAuth.
-    let received_length = receive_datagram(socket, &mut buffer, HandshakeStage::ClientAuth)?;
-
-    let client_auth = decode_client_auth(&buffer[..received_length], session_id)?;
+    // 5. Receive ClientAuth. If the cached ServerHello was lost, an identical
+    // repeated ClientHello causes the same ServerHello bytes to be resent.
+    let client_auth = receive_client_auth_with_duplicate_handling(
+        socket,
+        &mut buffer,
+        client_hello,
+        &server_hello_bytes,
+        session_id,
+    )?;
 
     // 6. Verify the client identity.
     //
@@ -342,10 +401,13 @@ pub fn perform_server_handshake(
 mod tests {
     use super::{
         HandshakeStage, UdpHandshakeError, accept_confirmation, perform_client_handshake,
-        perform_server_handshake, receive_datagram, send_and_receive_with_retry,
+        perform_server_handshake, receive_client_auth_with_duplicate_handling, receive_datagram,
+        send_and_receive_with_retry,
     };
     use crate::{
-        identity::IdentityKeyPair,
+        handshake::{ClientAuth, ClientHello},
+        handshake_transport::{encode_client_auth, encode_client_hello},
+        identity::{IDENTITY_SIGNATURE_LENGTH, IdentityKeyPair},
         protocol::{Frame, MessageType},
         toy_crypto::{
             key_derivation::{SessionRole, derive_session_keys},
@@ -419,6 +481,82 @@ mod tests {
 
         assert_eq!(&response[..response_length], b"ServerHello");
         server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn server_resends_cached_hello_for_an_identical_client_hello() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        server_socket
+            .connect(client_socket.local_addr().unwrap())
+            .unwrap();
+        client_socket
+            .connect(server_socket.local_addr().unwrap())
+            .unwrap();
+
+        let timeout = Some(Duration::from_secs(1));
+        server_socket.set_read_timeout(timeout).unwrap();
+        client_socket.set_read_timeout(timeout).unwrap();
+
+        let client_hello = ClientHello::new([0x11; 32]);
+        let client_hello_bytes = encode_client_hello(client_hello).unwrap();
+        let client_auth = ClientAuth::new([0x22; IDENTITY_SIGNATURE_LENGTH]);
+        let client_auth_bytes = encode_client_auth(42, client_auth).unwrap();
+        let cached_server_hello = b"cached ServerHello".to_vec();
+        let expected_server_hello = cached_server_hello.clone();
+
+        let client_thread = thread::spawn(move || {
+            client_socket.send(&client_hello_bytes).unwrap();
+
+            let mut response = [0_u8; 32];
+            let response_length = client_socket.recv(&mut response).unwrap();
+            assert_eq!(&response[..response_length], expected_server_hello);
+
+            client_socket.send(&client_auth_bytes).unwrap();
+        });
+
+        let mut buffer = [0_u8; 2048];
+        let received_auth = receive_client_auth_with_duplicate_handling(
+            &server_socket,
+            &mut buffer,
+            client_hello,
+            &cached_server_hello,
+            42,
+        )
+        .unwrap();
+
+        assert_eq!(received_auth, client_auth);
+        client_thread.join().unwrap();
+    }
+
+    #[test]
+    fn server_rejects_a_changed_duplicate_client_hello() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        server_socket
+            .connect(client_socket.local_addr().unwrap())
+            .unwrap();
+        client_socket
+            .connect(server_socket.local_addr().unwrap())
+            .unwrap();
+
+        let original = ClientHello::new([0x11; 32]);
+        let changed = encode_client_hello(ClientHello::new([0x22; 32])).unwrap();
+        client_socket.send(&changed).unwrap();
+
+        let mut buffer = [0_u8; 2048];
+        let error = receive_client_auth_with_duplicate_handling(
+            &server_socket,
+            &mut buffer,
+            original,
+            b"cached ServerHello",
+            42,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, UdpHandshakeError::ConflictingClientHello));
     }
 
     #[test]
