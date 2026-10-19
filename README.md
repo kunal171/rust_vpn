@@ -14,7 +14,9 @@ Ed25519 handshake runs over UDP, derives fresh directional keys, and returns a c
 handshake, and installs its fresh confirmed session before starting the data loops. Phase 11 is
 complete: bounded retransmission and duplicate handling recover from lost handshake datagrams
 without regenerating cryptographic state. The authenticated tunnel has been verified with an
-end-to-end namespace ping.
+end-to-end namespace ping. Phase 12 is complete: authenticated keepalives detect an inactive peer,
+the lifecycle enters `Reconnecting`, and a fresh authenticated session is installed without
+recreating the TUN interface. Ctrl+C clears the active session and transitions to `Stopped`.
 
 Working foundations:
 
@@ -39,6 +41,10 @@ Working foundations:
   encrypted `HandshakeComplete` key-confirmation message
 - Installation of the authenticated handshake session into the real TUN-to-UDP tunnel
 - Bounded handshake retries with cached responses for duplicate `ClientHello` and `ClientAuth`
+- A bounded outbound queue with exactly one owner of each session's send counter
+- Authenticated keepalive request/response frames and bounded peer-timeout detection
+- Fresh-session reconnection that replaces keys, counters, and replay state after a peer restart
+- An explicit `Handshaking`/`Established`/`Reconnecting`/`Stopped` lifecycle
 
 The public Phase 8 lab key is no longer used by `vpn_tunnel`. Each launch performs an authenticated
 ephemeral handshake and installs fresh keys and a fresh session ID. Matching identities establish
@@ -56,9 +62,13 @@ src/
 ├── handshake_transport.rs
 ├── identity.rs
 ├── ipv4.rs
+├── keepalive.rs
 ├── key_exchange.rs
+├── liveness.rs
+├── outbound.rs
 ├── protocol.rs
 ├── transport.rs
+├── tunnel_lifecycle.rs
 ├── udp_handshake.rs
 ├── toy_crypto/
 │   ├── diffie_hellman.rs
@@ -83,7 +93,8 @@ docs/
 ├── phase7-routing-nat.md
 ├── phase8-9-cryptography-guide.md
 ├── phase10-handshake-integration.md
-└── phase11-handshake-reliability.md
+├── phase11-handshake-reliability.md
+└── phase12-reconnect-lifecycle.md
 scripts/
 ├── netns-direct.sh
 ├── netns-bridge.sh
@@ -177,6 +188,7 @@ sudo ip netns exec rvpnr-client ping -c 3 10.200.4.2
 - [Phases 8 and 9: cryptography, components, and data flow](docs/phase8-9-cryptography-guide.md)
 - [Phase 10: authenticated-handshake integration](docs/phase10-handshake-integration.md)
 - [Phase 11: UDP handshake reliability](docs/phase11-handshake-reliability.md)
+- [Phase 12: tunnel lifecycle and authenticated reconnection](docs/phase12-reconnect-lifecycle.md)
 - `scripts/netns-direct.sh`: direct veth topology
 - `scripts/netns-bridge.sh`: bridged topology
 - `scripts/netns-routed.sh`: client, gateway, and LAN host for routing and NAT
@@ -192,10 +204,8 @@ cargo test
 
 ## Roadmap
 
-1. Add an explicit tunnel lifecycle with peer-restart detection, authenticated reconnects,
-   bounded queues, and graceful shutdown.
-2. Add full-tunnel routing, DNS configuration, leak testing, configurable MTU, and PMTUD tests.
-3. After the classical VPN works end to end, add crypto-agile message formats and experiment with a
+1. Add full-tunnel routing, DNS configuration, leak testing, configurable MTU, and PMTUD tests.
+2. After the classical VPN works end to end, add crypto-agile message formats and experiment with a
    hybrid post-quantum handshake: X25519 + ML-KEM for key establishment and Ed25519 + ML-DSA for
    peer authentication.
 
