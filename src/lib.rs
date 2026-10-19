@@ -31,6 +31,7 @@ pub mod liveness;
 pub mod outbound;
 /// Binary frame definitions and validation for data received from the network.
 pub mod protocol;
+/// Safe installation and cleanup of Linux full-tunnel routes.
 pub mod route_manager;
 /// Hand-written cryptographic math for learning. Never use it for real secrets.
 pub mod toy_crypto;

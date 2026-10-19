@@ -30,7 +30,7 @@ pub enum LinuxRouteError {
     /// Running the `ip` command failed.
     Io(io::Error),
 
-    /// Linux could not find a usable route.
+    /// A Linux `ip` command returned an unsuccessful status.
     CommandFailed(String),
 
     /// The output did not contain a device.
@@ -45,7 +45,7 @@ impl fmt::Display for LinuxRouteError {
         match self {
             Self::Io(error) => write!(formatter, "route lookup failed: {error}"),
             Self::CommandFailed(message) => {
-                write!(formatter, "ip route get failed: {message}")
+                write!(formatter, "ip command failed: {message}")
             }
             Self::MissingInterface => {
                 formatter.write_str("route lookup did not return an interface")

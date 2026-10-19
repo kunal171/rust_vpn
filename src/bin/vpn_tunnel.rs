@@ -4,12 +4,15 @@
 //! also owns lifecycle transitions and installs fresh sessions after timeout.
 
 use rust_vpn::cidr::{CidrError, Ipv4Cidr};
+use rust_vpn::full_tunnel::FullTunnelPlan;
 use rust_vpn::identity::{IDENTITY_PUBLIC_KEY_LENGTH, IDENTITY_SECRET_KEY_LENGTH, IdentityKeyPair};
 use rust_vpn::ipv4::decode_ipv4_header;
 use rust_vpn::keepalive::{KeepaliveAction, classify_authenticated_keepalive};
+use rust_vpn::linux_route::{PhysicalRoute, discover_physical_route};
 use rust_vpn::liveness::{LivenessAction, LivenessTracker};
 use rust_vpn::outbound::OutboundMessage;
 use rust_vpn::protocol::{Frame, MessageType};
+use rust_vpn::route_manager::InstalledFullTunnelRoutes;
 use rust_vpn::toy_crypto::{
     key_derivation::SessionRole,
     session::{CryptoReceiver, CryptoSender, CryptoSession},
@@ -39,7 +42,7 @@ const TUN_NETMASK: &str = "255.255.255.0";
 const OUTBOUND_QUEUE_CAPACITY: usize = 64;
 
 const USAGE: &str = "usage: vpn_tunnel <client|server> <tun-address> <bind-address> \
-     <peer-address> <allowed-ips> <identity-private-key> <peer-public-key>";
+     <peer-address> <allowed-ips> <identity-private-key> <peer-public-key> [--full-tunnel]";
 
 /// Link MTU (1500) minus outer IPv4 (20), UDP (8), frame header (16),
 /// and authentication tag (16), avoiding outer IP fragmentation.
@@ -89,6 +92,39 @@ fn parse_role(value: &str) -> io::Result<SessionRole> {
 /// Parses a comma-separated list such as `10.210.0.2/32,10.200.4.0/24`.
 fn parse_allowed_ips(text: &str) -> Result<Vec<Ipv4Cidr>, CidrError> {
     text.split(',').map(str::parse).collect()
+}
+
+/// Accepts the optional client-only full-tunnel routing flag.
+fn parse_full_tunnel_option(
+    arguments: &mut impl Iterator<Item = String>,
+    role: SessionRole,
+) -> io::Result<bool> {
+    let enabled = match arguments.next().as_deref() {
+        None => false,
+        Some("--full-tunnel") => true,
+        Some(value) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown option {value:?}\n{USAGE}"),
+            ));
+        }
+    };
+
+    if arguments.next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("too many arguments\n{USAGE}"),
+        ));
+    }
+
+    if enabled && role != SessionRole::Client {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--full-tunnel is valid only for the client role",
+        ));
+    }
+
+    Ok(enabled)
 }
 
 /// Returns the next command-line argument, or an error that names it.
@@ -178,10 +214,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let allowed_ips = parse_allowed_ips(&required_argument(&mut arguments, "allowed-ips")?)?;
     let identity_private_path = required_argument(&mut arguments, "identity-private-key")?;
     let peer_public_path = required_argument(&mut arguments, "peer-public-key")?;
-
-    if arguments.next().is_some() {
-        return Err(format!("too many arguments\n{USAGE}").into());
-    }
+    let full_tunnel = parse_full_tunnel_option(&mut arguments, role)?;
 
     let mut identity_secret = read_fixed_key::<IDENTITY_SECRET_KEY_LENGTH>(
         Path::new(&identity_private_path),
@@ -205,6 +238,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     // independently authenticates the identity pinned in peer_public_key.
     socket.connect(peer_address)?;
     socket.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+
+    // Discover the original transport path before installing any route that
+    // directs ordinary traffic into the tunnel.
+    let physical_route: Option<PhysicalRoute> = if full_tunnel {
+        let peer_ip = match peer_address.ip() {
+            std::net::IpAddr::V4(address) => address,
+            std::net::IpAddr::V6(_) => {
+                return Err("--full-tunnel currently requires an IPv4 UDP peer".into());
+            }
+        };
+
+        Some(discover_physical_route(peer_ip)?)
+    } else {
+        None
+    };
 
     println!("Authenticating UDP peer {peer_address} as {role:?}...");
 
@@ -236,6 +284,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         .up();
 
     let device = tun::create(&configuration)?;
+
+    let mut full_tunnel_routes = if let Some(physical_route) = physical_route.as_ref() {
+        let plan = FullTunnelPlan::new(peer_address.ip())?;
+        let routes = InstalledFullTunnelRoutes::install(&plan, physical_route, TUN_NAME)?;
+
+        println!("Installed IPv4 full-tunnel routes through {TUN_NAME}");
+
+        Some(routes)
+    } else {
+        None
+    };
 
     println!("Created {TUN_NAME} with address {tun_address}/24");
     println!(
@@ -274,7 +333,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    loop {
+    'supervisor: loop {
         match udp_to_tun(
             &socket,
             &mut writer,
@@ -305,7 +364,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 tunnel_state = tunnel_state.transition(TunnelEvent::Shutdown)?;
 
                 println!("Tunnel state: {tunnel_state:?}");
-                return Ok(());
+                break 'supervisor;
             }
 
             socket.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
@@ -335,6 +394,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         println!("Tunnel state: {tunnel_state:?}");
         println!("Reauthenticated UDP peer {peer_address}");
+    }
+
+    if let Some(routes) = full_tunnel_routes.as_mut() {
+        routes.remove()?;
+        println!("Removed IPv4 full-tunnel routes");
     }
 
     Ok(())
@@ -607,7 +671,7 @@ fn send_outbound_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::{SharedCryptoSender, parse_role, set_outbound_session};
+    use super::{SharedCryptoSender, parse_full_tunnel_option, parse_role, set_outbound_session};
     use rust_vpn::protocol::MessageType;
     use rust_vpn::toy_crypto::{
         key_derivation::{SessionRole, derive_session_keys},
@@ -624,6 +688,22 @@ mod tests {
     #[test]
     fn rejects_unknown_roles() {
         assert!(parse_role("peer").is_err());
+    }
+
+    #[test]
+    fn accepts_full_tunnel_only_for_the_client() {
+        let mut client_arguments = vec!["--full-tunnel".to_owned()].into_iter();
+        assert!(parse_full_tunnel_option(&mut client_arguments, SessionRole::Client).unwrap());
+
+        let mut server_arguments = vec!["--full-tunnel".to_owned()].into_iter();
+        assert!(parse_full_tunnel_option(&mut server_arguments, SessionRole::Server).is_err());
+    }
+
+    #[test]
+    fn keeps_full_tunnel_disabled_when_the_flag_is_absent() {
+        let mut arguments = Vec::<String>::new().into_iter();
+
+        assert!(!parse_full_tunnel_option(&mut arguments, SessionRole::Client).unwrap());
     }
 
     #[test]
