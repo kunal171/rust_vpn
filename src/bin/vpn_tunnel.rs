@@ -14,6 +14,7 @@ use rust_vpn::toy_crypto::{
     session::{CryptoReceiver, CryptoSender},
 };
 use rust_vpn::transport::RECEIVE_BUFFER_SIZE;
+use rust_vpn::tunnel_lifecycle::{TunnelEvent, TunnelState};
 use rust_vpn::udp_handshake::{
     ServerConfirmationCache, perform_client_handshake, perform_server_handshake,
 };
@@ -46,6 +47,11 @@ const PACKET_BUFFER_SIZE: usize = 65_535;
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_MISSED_KEEPALIVES: u8 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiveLoopExit {
+    PeerTimedOut,
+}
 
 /// Converts the command-line role into directional send and receive key usage.
 fn parse_role(value: &str) -> io::Result<SessionRole> {
@@ -130,6 +136,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Authenticating UDP peer {peer_address} as {role:?}...");
 
+    let mut tunnel_state = TunnelState::Handshaking;
+
     let (session, confirmation_cache) = match role {
         SessionRole::Client => {
             let session = perform_client_handshake(&socket, &identity, peer_public_key)?;
@@ -145,6 +153,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     socket.set_read_timeout(Some(KEEPALIVE_INTERVAL))?;
+
+    tunnel_state = tunnel_state.transition(TunnelEvent::HandshakeSucceeded)?;
+
+    println!("Tunnel state: {tunnel_state:?}");
 
     // The sending thread exclusively owns the send counter, while the receive
     // loop owns replay state for this freshly authenticated session.
@@ -196,14 +208,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    udp_to_tun(
+    match udp_to_tun(
         socket,
         writer,
         &allowed_ips,
         crypto_receiver,
         confirmation_cache,
         receive_outbound_sender,
-    )?;
+    )? {
+        ReceiveLoopExit::PeerTimedOut => {
+            tunnel_state = tunnel_state.transition(TunnelEvent::PeerTimedOut)?;
+
+            println!("Tunnel state: {tunnel_state:?}");
+        }
+    }
 
     Ok(())
 }
@@ -235,7 +253,7 @@ fn udp_to_tun(
     mut receiver: CryptoReceiver,
     mut confirmation_cache: Option<ServerConfirmationCache>,
     outbound_sender: SyncSender<OutboundMessage>,
-) -> io::Result<()> {
+) -> io::Result<ReceiveLoopExit> {
     let mut liveness = LivenessTracker::new(
         NonZeroU8::new(MAX_MISSED_KEEPALIVES)
             .expect("maximum missed keepalives must be greater than zero"),
@@ -269,10 +287,8 @@ fn udp_to_tun(
                         continue;
                     }
                     LivenessAction::PeerTimedOut => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "authenticated peer missed the keepalive limit",
-                        ));
+                        println!("Peer missed the authenticated keepalive limit");
+                        return Ok(ReceiveLoopExit::PeerTimedOut);
                     }
                 }
             }
