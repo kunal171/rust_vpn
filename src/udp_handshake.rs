@@ -651,6 +651,59 @@ mod tests {
     }
 
     #[test]
+    fn connected_udp_peers_establish_a_fresh_reconnection_session() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        server_socket
+            .connect(client_socket.local_addr().unwrap())
+            .unwrap();
+        client_socket
+            .connect(server_socket.local_addr().unwrap())
+            .unwrap();
+
+        let timeout = Some(Duration::from_secs(2));
+        server_socket.set_read_timeout(timeout).unwrap();
+        client_socket.set_read_timeout(timeout).unwrap();
+
+        let client_identity = IdentityKeyPair::generate().unwrap();
+        let server_identity = IdentityKeyPair::generate().unwrap();
+        let client_public_key = client_identity.public_key();
+        let server_public_key = server_identity.public_key();
+
+        let server_thread = thread::spawn(move || {
+            let first =
+                perform_server_handshake(&server_socket, &server_identity, client_public_key)
+                    .unwrap();
+            let second =
+                perform_server_handshake(&server_socket, &server_identity, client_public_key)
+                    .unwrap();
+
+            (first, second)
+        });
+
+        let mut first_client =
+            perform_client_handshake(&client_socket, &client_identity, server_public_key).unwrap();
+        let stale_frame = first_client
+            .protect(MessageType::Data, b"old session".to_vec())
+            .unwrap();
+
+        let mut second_client =
+            perform_client_handshake(&client_socket, &client_identity, server_public_key).unwrap();
+        let ((_first_server, _), (mut second_server, _)) = server_thread.join().unwrap();
+
+        assert!(second_server.unprotect(&stale_frame).is_err());
+
+        let fresh_frame = second_client
+            .protect(MessageType::Data, b"new session".to_vec())
+            .unwrap();
+        let opened = second_server.unprotect(&fresh_frame).unwrap();
+
+        assert_eq!(fresh_frame.counter(), 1);
+        assert_eq!(opened.payload(), b"new session");
+    }
+
+    #[test]
     fn confirmation_cache_only_answers_matching_client_auth() {
         let expected_client_auth = b"expected ClientAuth".to_vec();
         let confirmation = b"protected HandshakeComplete".to_vec();
