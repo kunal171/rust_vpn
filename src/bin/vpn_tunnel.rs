@@ -221,7 +221,8 @@ fn read_tun_packets(
     }
 }
 
-/// Authenticates received Data frames and writes their inner IP packets to TUN.
+/// Authenticates inbound frames, handles keepalive controls, and writes
+/// allowed inner IP packets to TUN.
 fn udp_to_tun(
     socket: UdpSocket,
     mut writer: Writer,
@@ -320,6 +321,9 @@ fn udp_to_tun(
             eprintln!("Ignoring unexpected {:?} frame", frame.message_type());
             continue;
         }
+
+        // Authenticated Data proves the client received HandshakeComplete.
+        confirmation_cache = None;
 
         // The peer may only send from its allowed addresses; anything else
         // would let it inject spoofed traffic into this side's network.
