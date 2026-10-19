@@ -9,6 +9,8 @@
 pub mod authenticated_handshake;
 /// IPv4 networks in CIDR notation, used as a peer's allowed source addresses.
 pub mod cidr;
+/// Pure route planning for an IPv4 full-tunnel client.
+pub mod full_tunnel;
 /// Canonical transcript hashed and authenticated during VPN handshakes.
 pub mod handshake;
 /// Encoding and validation of handshake messages carried over UDP.
