@@ -1,34 +1,41 @@
-//! Connects a Linux TUN interface to a UDP peer.
-//!
-//! One thread reads packets from TUN, encrypts them, and sends protected Data
-//! frames to the peer. The main thread authenticates and decrypts received
-//! frames before writing their inner IP packets into TUN. Both ends run this
-//! same program with mirrored roles and addresses.
+//! A TUN-reader thread queues inner packets, one sender thread protects all
+//! outbound messages, and the main thread authenticates inbound frames before
+//! writing Data packets to TUN or handling control messages.
 
 use rust_vpn::cidr::{CidrError, Ipv4Cidr};
 use rust_vpn::identity::{IDENTITY_PUBLIC_KEY_LENGTH, IDENTITY_SECRET_KEY_LENGTH, IdentityKeyPair};
 use rust_vpn::ipv4::decode_ipv4_header;
+use rust_vpn::keepalive::{KeepaliveAction, classify_authenticated_keepalive};
+use rust_vpn::liveness::{LivenessAction, LivenessTracker};
+use rust_vpn::outbound::OutboundMessage;
 use rust_vpn::protocol::{Frame, MessageType};
 use rust_vpn::toy_crypto::{
     key_derivation::SessionRole,
-    session::{CryptoReceiver, CryptoSender},
+    session::{CryptoReceiver, CryptoSender, CryptoSession},
 };
 use rust_vpn::transport::RECEIVE_BUFFER_SIZE;
+use rust_vpn::tunnel_lifecycle::{TunnelEvent, TunnelState};
 use rust_vpn::udp_handshake::{
-    ServerConfirmationCache, perform_client_handshake, perform_server_handshake,
+    ServerConfirmationCache, UdpHandshakeError, perform_client_handshake, perform_server_handshake,
 };
 use std::env;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::num::NonZeroU8;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver as OutboundReceiver, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tun::{Configuration, Layer, Reader, Writer};
 
 const TUN_NAME: &str = "rvpn0";
 const TUN_NETMASK: &str = "255.255.255.0";
+/// Limits memory use when producers are faster than UDP transmission.
+const OUTBOUND_QUEUE_CAPACITY: usize = 64;
 
 const USAGE: &str = "usage: vpn_tunnel <client|server> <tun-address> <bind-address> \
      <peer-address> <allowed-ips> <identity-private-key> <peer-public-key>";
@@ -39,6 +46,24 @@ const TUN_MTU: u16 = 1440;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 // Same reasoning as tun_reader: the largest possible IPv4 packet.
 const PACKET_BUFFER_SIZE: usize = 65_535;
+
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const MAX_MISSED_KEEPALIVES: u8 = 3;
+const RECONNECT_DELAY: Duration = Duration::from_secs(2);
+
+type SharedCryptoSender = Arc<Mutex<Option<CryptoSender>>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiveLoopExit {
+    PeerTimedOut,
+    Shutdown,
+}
+
+/// Fresh cryptographic state plus the server-only confirmation retry cache.
+struct HandshakeOutput {
+    session: CryptoSession,
+    confirmation_cache: Option<ServerConfirmationCache>,
+}
 
 /// Converts the command-line role into directional send and receive key usage.
 fn parse_role(value: &str) -> io::Result<SessionRole> {
@@ -90,6 +115,50 @@ fn read_fixed_key<const LENGTH: usize>(path: &Path, name: &str) -> io::Result<[u
     Ok(key)
 }
 
+/// Runs the role-specific authenticated handshake without duplicating it in
+/// the initial-connection and reconnection paths.
+fn perform_authenticated_handshake(
+    socket: &UdpSocket,
+    role: SessionRole,
+    identity: &IdentityKeyPair,
+    peer_public_key: [u8; IDENTITY_PUBLIC_KEY_LENGTH],
+) -> Result<HandshakeOutput, UdpHandshakeError> {
+    match role {
+        SessionRole::Client => {
+            let session = perform_client_handshake(socket, identity, peer_public_key)?;
+
+            Ok(HandshakeOutput {
+                session,
+                confirmation_cache: None,
+            })
+        }
+
+        SessionRole::Server => {
+            let (session, confirmation_cache) =
+                perform_server_handshake(socket, identity, peer_public_key)?;
+
+            Ok(HandshakeOutput {
+                session,
+                confirmation_cache: Some(confirmation_cache),
+            })
+        }
+    }
+}
+
+/// Replaces or removes the only sender allowed to consume session counters.
+fn set_outbound_session(
+    shared_sender: &SharedCryptoSender,
+    sender: Option<CryptoSender>,
+) -> io::Result<()> {
+    let mut current_sender = shared_sender
+        .lock()
+        .map_err(|_| io::Error::other("outbound crypto session lock was poisoned"))?;
+
+    *current_sender = sender;
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args().skip(1);
 
@@ -115,6 +184,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         "peer public key",
     )?;
 
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
+    let signal_shutdown_requested = Arc::clone(&shutdown_requested);
+
+    ctrlc::set_handler(move || {
+        signal_shutdown_requested.store(true, Ordering::Relaxed);
+    })?;
+
     let socket = UdpSocket::bind(bind_address)?;
     // UDP connect restricts datagrams to one network address. The handshake
     // independently authenticates the identity pinned in peer_public_key.
@@ -123,25 +199,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Authenticating UDP peer {peer_address} as {role:?}...");
 
-    let (session, confirmation_cache) = match role {
-        SessionRole::Client => {
-            let session = perform_client_handshake(&socket, &identity, peer_public_key)?;
+    let mut tunnel_state = TunnelState::Handshaking;
 
-            (session, None)
-        }
+    let handshake = perform_authenticated_handshake(&socket, role, &identity, peer_public_key)?;
 
-        SessionRole::Server => {
-            let (session, cache) = perform_server_handshake(&socket, &identity, peer_public_key)?;
+    socket.set_read_timeout(Some(KEEPALIVE_INTERVAL))?;
 
-            (session, Some(cache))
-        }
-    };
+    tunnel_state = tunnel_state.transition(TunnelEvent::HandshakeSucceeded)?;
 
-    socket.set_read_timeout(None)?;
+    println!("Tunnel state: {tunnel_state:?}");
 
     // The sending thread exclusively owns the send counter, while the receive
     // loop owns replay state for this freshly authenticated session.
-    let (sender, receiver) = session.into_split();
+    let (crypto_sender, mut crypto_receiver) = handshake.session.into_split();
+    let mut confirmation_cache = handshake.confirmation_cache;
 
     println!("Authenticated UDP peer {peer_address}");
 
@@ -166,70 +237,177 @@ fn main() -> Result<(), Box<dyn Error>> {
     let allowed_list: Vec<String> = allowed_ips.iter().map(ToString::to_string).collect();
     println!("Accepting inner packets from {}", allowed_list.join(", "));
 
-    let (reader, writer) = device.split();
+    let (reader, mut writer) = device.split();
     let send_socket = socket.try_clone()?;
 
+    let (outbound_sender, outbound_receiver) = sync_channel(OUTBOUND_QUEUE_CAPACITY);
+
+    let receive_outbound_sender = outbound_sender.clone();
+    let shared_crypto_sender = Arc::new(Mutex::new(Some(crypto_sender)));
+    let send_crypto_sender = Arc::clone(&shared_crypto_sender);
+
     thread::spawn(move || {
-        if let Err(error) = tun_to_udp(reader, send_socket, peer_address, sender) {
-            eprintln!("TUN to UDP stopped: {error}");
-            // A tunnel that can only receive is broken; stop the whole process.
+        if let Err(error) = send_outbound_messages(
+            send_socket,
+            peer_address,
+            send_crypto_sender,
+            outbound_receiver,
+        ) {
+            eprintln!("Outbound sender stopped: {error}");
             std::process::exit(1);
         }
     });
 
-    udp_to_tun(socket, writer, &allowed_ips, receiver, confirmation_cache)?;
+    thread::spawn(move || {
+        if let Err(error) = read_tun_packets(reader, outbound_sender) {
+            eprintln!("TUN reader stopped: {error}");
+            std::process::exit(1);
+        }
+    });
+
+    loop {
+        match udp_to_tun(
+            &socket,
+            &mut writer,
+            &allowed_ips,
+            crypto_receiver,
+            confirmation_cache,
+            &receive_outbound_sender,
+            &shutdown_requested,
+        )? {
+            ReceiveLoopExit::PeerTimedOut => {
+                tunnel_state = tunnel_state.transition(TunnelEvent::PeerTimedOut)?;
+                set_outbound_session(&shared_crypto_sender, None)?;
+
+                println!("Tunnel state: {tunnel_state:?}");
+            }
+
+            ReceiveLoopExit::Shutdown => {
+                set_outbound_session(&shared_crypto_sender, None)?;
+                tunnel_state = tunnel_state.transition(TunnelEvent::Shutdown)?;
+
+                println!("Tunnel state: {tunnel_state:?}");
+                break;
+            }
+        }
+
+        let reconnected = loop {
+            if shutdown_requested.load(Ordering::Relaxed) {
+                tunnel_state = tunnel_state.transition(TunnelEvent::Shutdown)?;
+
+                println!("Tunnel state: {tunnel_state:?}");
+                return Ok(());
+            }
+
+            socket.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+
+            println!("Reauthenticating UDP peer {peer_address} as {role:?}...");
+
+            match perform_authenticated_handshake(&socket, role, &identity, peer_public_key) {
+                Ok(handshake) => break handshake,
+                Err(error) => {
+                    eprintln!(
+                        "Reconnect handshake failed: {error}; retrying in {} seconds",
+                        RECONNECT_DELAY.as_secs()
+                    );
+                    thread::sleep(RECONNECT_DELAY);
+                }
+            }
+        };
+
+        socket.set_read_timeout(Some(KEEPALIVE_INTERVAL))?;
+
+        let (new_crypto_sender, new_crypto_receiver) = reconnected.session.into_split();
+        set_outbound_session(&shared_crypto_sender, Some(new_crypto_sender))?;
+
+        crypto_receiver = new_crypto_receiver;
+        confirmation_cache = reconnected.confirmation_cache;
+        tunnel_state = tunnel_state.transition(TunnelEvent::HandshakeSucceeded)?;
+
+        println!("Tunnel state: {tunnel_state:?}");
+        println!("Reauthenticated UDP peer {peer_address}");
+    }
 
     Ok(())
 }
 
-/// Reads inner IP packets from TUN and sends each in a protected Data frame.
-fn tun_to_udp(
+/// Reads inner IP packets from TUN and queues owned copies for encryption.
+fn read_tun_packets(
     mut reader: Reader,
-    socket: UdpSocket,
-    peer_address: SocketAddr,
-    mut sender: CryptoSender,
+    outbound_sender: SyncSender<OutboundMessage>,
 ) -> io::Result<()> {
     let mut buffer = vec![0_u8; PACKET_BUFFER_SIZE];
 
     loop {
         let packet_length = reader.read(&mut buffer)?;
-        let packet = &buffer[..packet_length];
 
-        // CryptoSender allocates a unique counter, encrypts the inner packet,
-        // and authenticates the visible frame header as associated data.
-        let frame = sender
-            .protect(MessageType::Data, packet.to_vec())
-            .map_err(io::Error::other)?;
+        let message = OutboundMessage::Data(buffer[..packet_length].to_vec());
 
-        let counter = frame.counter();
-        let encoded_frame = frame.encode();
-
-        // A missing peer must not stop the tunnel; drop the packet and go on.
-        match socket.send(&encoded_frame) {
-            Ok(sent_length) => println!(
-                "direction=send peer={peer_address} counter={counter} \
-                packet_length={packet_length} frame_length={sent_length}"
-            ),
-            Err(error) => eprintln!("Dropping packet {counter}: send failed: {error}"),
-        }
+        outbound_sender.send(message).map_err(|_| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "outbound sender disconnected")
+        })?;
     }
 }
 
-/// Authenticates received Data frames and writes their inner IP packets to TUN.
+/// Authenticates inbound frames, handles keepalive controls, and writes
+/// allowed inner IP packets to TUN.
 fn udp_to_tun(
-    socket: UdpSocket,
-    mut writer: Writer,
+    socket: &UdpSocket,
+    writer: &mut Writer,
     allowed_ips: &[Ipv4Cidr],
     mut receiver: CryptoReceiver,
     mut confirmation_cache: Option<ServerConfirmationCache>,
-) -> io::Result<()> {
+    outbound_sender: &SyncSender<OutboundMessage>,
+    shutdown_requested: &AtomicBool,
+) -> io::Result<ReceiveLoopExit> {
+    let mut liveness = LivenessTracker::new(
+        NonZeroU8::new(MAX_MISSED_KEEPALIVES)
+            .expect("maximum missed keepalives must be greater than zero"),
+    );
+
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
 
     loop {
+        if shutdown_requested.load(Ordering::Relaxed) {
+            return Ok(ReceiveLoopExit::Shutdown);
+        }
+
         let received_length = match socket.recv(&mut buffer) {
             Ok(length) => length,
+            Err(error)
+                if error.kind() == io::ErrorKind::Interrupted
+                    && shutdown_requested.load(Ordering::Relaxed) =>
+            {
+                return Ok(ReceiveLoopExit::Shutdown);
+            }
             // The peer is not running yet; keep waiting for it.
             Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                match liveness.on_interval_elapsed() {
+                    LivenessAction::SendKeepalive => {
+                        outbound_sender
+                            .send(OutboundMessage::Keepalive)
+                            .map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::BrokenPipe,
+                                    "outbound tunnel sender stopped",
+                                )
+                            })?;
+
+                        println!("No authenticated traffic; queued keepalive");
+                        continue;
+                    }
+                    LivenessAction::PeerTimedOut => {
+                        println!("Peer missed the authenticated keepalive limit");
+                        return Ok(ReceiveLoopExit::PeerTimedOut);
+                    }
+                }
+            }
             Err(error) => return Err(error),
         };
 
@@ -266,13 +444,57 @@ fn udp_to_tun(
             }
         };
 
+        liveness.record_authenticated_activity();
+
+        if matches!(
+            frame.message_type(),
+            MessageType::Keepalive | MessageType::KeepaliveResponse
+        ) {
+            let action = match classify_authenticated_keepalive(&frame) {
+                Ok(action) => action,
+
+                Err(error) => {
+                    eprintln!("Rejected keepalive counter={}: {error}", frame.counter());
+                    continue;
+                }
+            };
+
+            // An authenticated post-handshake control frame proves that the
+            // peer entered the established session.
+            confirmation_cache = None;
+
+            match action {
+                KeepaliveAction::SendResponse => {
+                    outbound_sender
+                        .send(OutboundMessage::KeepaliveResponse)
+                        .map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "outbound sender disconnected",
+                            )
+                        })?;
+
+                    println!("Queued KeepaliveResponse for counter={}", frame.counter());
+                }
+
+                KeepaliveAction::ResponseReceived => {
+                    println!(
+                        "Received authenticated KeepaliveResponse \
+                        counter={}",
+                        frame.counter()
+                    );
+                }
+            }
+
+            continue;
+        }
+
         if frame.message_type() != MessageType::Data {
             eprintln!("Ignoring unexpected {:?} frame", frame.message_type());
             continue;
         }
 
-        // Authenticated data proves the client received HandshakeComplete, so
-        // the server no longer needs to answer duplicate ClientAuth messages.
+        // Authenticated Data proves the client received HandshakeComplete.
         confirmation_cache = None;
 
         // The peer may only send from its allowed addresses; anything else
@@ -308,10 +530,81 @@ fn udp_to_tun(
     }
 }
 
+/// Protects and sends every queued message using one monotonically
+/// increasing cryptographic counter.
+fn send_outbound_messages(
+    socket: UdpSocket,
+    peer_address: SocketAddr,
+    shared_crypto_sender: SharedCryptoSender,
+    outbound_receiver: OutboundReceiver<OutboundMessage>,
+) -> io::Result<()> {
+    loop {
+        let message = outbound_receiver.recv().map_err(|_| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "outbound queue disconnected")
+        })?;
+
+        let (message_type, payload) = message.into_parts();
+
+        let payload_length = payload.len();
+
+        // Keep the lock through UDP send. Once the supervisor clears this
+        // slot, no old-session frame can race with a new handshake datagram.
+        let mut current_sender = shared_crypto_sender
+            .lock()
+            .map_err(|_| io::Error::other("outbound crypto session lock was poisoned"))?;
+
+        let Some(crypto_sender) = current_sender.as_mut() else {
+            eprintln!(
+                "Dropping {message_type:?} payload_length={payload_length}: \
+                 tunnel is reconnecting"
+            );
+            continue;
+        };
+
+        let frame = crypto_sender
+            .protect(message_type, payload)
+            .map_err(io::Error::other)?;
+
+        let counter = frame.counter();
+        let encoded_frame = frame.encode();
+
+        match socket.send(&encoded_frame) {
+            Ok(sent_length) if sent_length == encoded_frame.len() => {
+                println!(
+                    "direction=send peer={peer_address} \
+                     type={message_type:?} counter={counter} \
+                     payload_length={payload_length} \
+                     frame_length={sent_length}"
+                );
+            }
+
+            Ok(sent_length) => {
+                eprintln!(
+                    "Dropping {message_type:?} counter={counter}: \
+                     sent {sent_length} of {} bytes",
+                    encoded_frame.len()
+                );
+            }
+
+            Err(error) => {
+                eprintln!(
+                    "Dropping {message_type:?} \
+                     counter={counter}: send failed: {error}"
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_role;
-    use rust_vpn::toy_crypto::key_derivation::SessionRole;
+    use super::{SharedCryptoSender, parse_role, set_outbound_session};
+    use rust_vpn::protocol::MessageType;
+    use rust_vpn::toy_crypto::{
+        key_derivation::{SessionRole, derive_session_keys},
+        session::CryptoSession,
+    };
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn parses_client_and_server_roles() {
@@ -322,5 +615,31 @@ mod tests {
     #[test]
     fn rejects_unknown_roles() {
         assert!(parse_role("peer").is_err());
+    }
+
+    #[test]
+    fn replaces_an_expired_outbound_session() {
+        let old_keys = derive_session_keys(b"old secret", b"old salt").unwrap();
+        let (old_sender, _) = CryptoSession::new(41, SessionRole::Client, old_keys).into_split();
+        let shared_sender: SharedCryptoSender = Arc::new(Mutex::new(Some(old_sender)));
+
+        set_outbound_session(&shared_sender, None).unwrap();
+        assert!(shared_sender.lock().unwrap().is_none());
+
+        let new_keys = derive_session_keys(b"new secret", b"new salt").unwrap();
+        let (new_sender, _) = CryptoSession::new(42, SessionRole::Client, new_keys).into_split();
+
+        set_outbound_session(&shared_sender, Some(new_sender)).unwrap();
+
+        let protected = shared_sender
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .protect(MessageType::Keepalive, Vec::new())
+            .unwrap();
+
+        assert_eq!(protected.session_id(), 42);
+        assert_eq!(protected.counter(), 1);
     }
 }

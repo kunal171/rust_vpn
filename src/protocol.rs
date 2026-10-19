@@ -4,7 +4,7 @@
 //! `version | message type | session ID | packet counter | payload length`.
 //!
 //! Every peer-controlled value must be validated before use. Multi-byte
-//! integers will be encoded explicitly in network byte order (big-endian).
+//! integers are encoded explicitly in network byte order (big-endian).
 
 use std::fmt;
 
@@ -24,16 +24,22 @@ pub const MAX_PAYLOAD_SIZE: usize = MAX_FRAME_SIZE - HEADER_SIZE;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
-    /// Carries tunnel data; later this will be an inner IP packet.
+    /// Carries one inner IP packet; session protection encrypts it on the wire.
     Data = 1,
     /// Confirms receipt of a previously sent data message.
     Acknowledgment = 2,
     /// Starts a handshake by carrying the client's ephemeral public key.
     ClientHello = 3,
+    /// Carries the server's ephemeral key and identity signature.
     ServerHello = 4,
+    /// Carries the client's identity signature over the handshake transcript.
     ClientAuth = 5,
     /// Confirms that authentication succeeded and traffic keys are active.
     HandshakeComplete = 6,
+    /// Checks whether an established authenticated peer is alive.
+    Keepalive = 7,
+    /// Confirms receipt of an authenticated keepalive.
+    KeepaliveResponse = 8,
 }
 
 /// One logical message exchanged between VPN peers.
@@ -295,6 +301,8 @@ impl TryFrom<u8> for MessageType {
             value if value == Self::ServerHello.as_u8() => Ok(Self::ServerHello),
             value if value == Self::ClientAuth.as_u8() => Ok(Self::ClientAuth),
             value if value == Self::HandshakeComplete.as_u8() => Ok(Self::HandshakeComplete),
+            value if value == Self::Keepalive.as_u8() => Ok(Self::Keepalive),
+            value if value == Self::KeepaliveResponse.as_u8() => Ok(Self::KeepaliveResponse),
             value => Err(ProtocolError::UnknownMessageType(value)),
         }
     }
@@ -350,6 +358,8 @@ mod tests {
         assert_eq!(MessageType::ServerHello.as_u8(), 4);
         assert_eq!(MessageType::ClientAuth.as_u8(), 5);
         assert_eq!(MessageType::HandshakeComplete.as_u8(), 6);
+        assert_eq!(MessageType::Keepalive.as_u8(), 7);
+        assert_eq!(MessageType::KeepaliveResponse.as_u8(), 8);
     }
 
     #[test]
@@ -364,6 +374,9 @@ mod tests {
 
         assert_eq!(MessageType::try_from(5), Ok(MessageType::ClientAuth));
         assert_eq!(MessageType::try_from(6), Ok(MessageType::HandshakeComplete));
+        assert_eq!(MessageType::try_from(7), Ok(MessageType::Keepalive));
+
+        assert_eq!(MessageType::try_from(8), Ok(MessageType::KeepaliveResponse));
     }
 
     #[test]
@@ -567,5 +580,17 @@ mod tests {
                 maximum: MAX_PAYLOAD_SIZE,
             }),
         );
+    }
+
+    #[test]
+    fn keepalive_message_types_round_trip() {
+        for message_type in [MessageType::Keepalive, MessageType::KeepaliveResponse] {
+            let frame = Frame::new(message_type, 42, 7, Vec::new()).unwrap();
+
+            let decoded = Frame::decode(&frame.encode()).unwrap();
+
+            assert_eq!(decoded.message_type(), message_type);
+            assert!(decoded.payload().is_empty());
+        }
     }
 }

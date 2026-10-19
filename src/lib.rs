@@ -15,14 +15,22 @@ pub mod handshake_transport;
 pub mod identity;
 /// IPv4 header decoding, the Internet checksum, and ICMP echo replies.
 pub mod ipv4;
+/// Semantic validation for authenticated keepalive control frames.
+pub mod keepalive;
 /// Ephemeral X25519 key agreement for creating fresh session secrets.
 pub mod key_exchange;
+/// Bounded tracking of unanswered keepalive probes.
+pub mod liveness;
+/// Owned messages sent to the single cryptographic sender.
+pub mod outbound;
 /// Binary frame definitions and validation for data received from the network.
 pub mod protocol;
 /// Hand-written cryptographic math for learning. Never use it for real secrets.
 pub mod toy_crypto;
-/// UDP addresses, buffer sizes, timeouts, and temporary transport constants.
+/// UDP addresses, buffer sizes, timeouts, and shared transport constants.
 pub mod transport;
+/// Explicit state transitions for the tunnel connection lifecycle.
+pub mod tunnel_lifecycle;
 /// Authenticated handshake exchange over a connected UDP socket.
 pub mod udp_handshake;
 

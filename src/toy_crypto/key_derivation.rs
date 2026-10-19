@@ -1,7 +1,8 @@
-//! Session-key derivation for the cryptography learning phase.
+//! Directional session-key derivation for handshake and learning experiments.
 //!
-//! HKDF-SHA256 is a real cryptographic primitive, but the toy Diffie-Hellman
-//! secret used by the current experiments is not secure.
+//! The VPN supplies X25519 shared secret material from its authenticated
+//! handshake. Tests may also use the hand-written Diffie-Hellman exercise,
+//! which is educational and must not protect real traffic.
 
 use hkdf::{Hkdf, InvalidLength};
 use sha2::Sha256;

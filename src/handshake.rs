@@ -1,7 +1,8 @@
 //! Canonical transcript construction for the authenticated handshake.
 //!
 //! Both peers must construct identical transcript bytes. Identity signatures
-//! will later authenticate the transcript hash.
+//! authenticate the transcript hash and bind the ephemeral keys to the pinned
+//! peer identities.
 
 use sha2::{Digest, Sha256};
 use std::{error::Error, fmt};

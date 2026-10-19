@@ -1,7 +1,8 @@
 //! Ephemeral X25519 key agreement for VPN handshakes.
 //!
 //! X25519 creates shared secret material but does not authenticate either peer.
-//! Authentication and transcript binding will be added by the handshake layer.
+//! The authenticated-handshake layer provides identity verification and
+//! transcript binding around this primitive.
 
 use std::{error::Error, fmt};
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
