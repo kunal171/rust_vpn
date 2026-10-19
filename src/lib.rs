@@ -23,12 +23,15 @@ pub mod ipv4;
 pub mod keepalive;
 /// Ephemeral X25519 key agreement for creating fresh session secrets.
 pub mod key_exchange;
+/// Linux physical-route discovery for preserving the VPN transport path.
+pub mod linux_route;
 /// Bounded tracking of unanswered keepalive probes.
 pub mod liveness;
 /// Owned messages sent to the single cryptographic sender.
 pub mod outbound;
 /// Binary frame definitions and validation for data received from the network.
 pub mod protocol;
+pub mod route_manager;
 /// Hand-written cryptographic math for learning. Never use it for real secrets.
 pub mod toy_crypto;
 /// UDP addresses, buffer sizes, timeouts, and shared transport constants.
@@ -37,9 +40,6 @@ pub mod transport;
 pub mod tunnel_lifecycle;
 /// Authenticated handshake exchange over a connected UDP socket.
 pub mod udp_handshake;
-
-/// Linux physical-route discovery for preserving the VPN transport path.
-pub mod linux_route;
 
 /// Identifies which side of the client-server example is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
