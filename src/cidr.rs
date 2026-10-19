@@ -25,7 +25,9 @@ pub enum CidrError {
     InvalidPrefix(String),
     /// The address has bits set beyond the prefix, such as `10.0.0.7/24`.
     HostBitsSet {
+        /// Address containing the unexpected host bits.
         address: Ipv4Addr,
+        /// Network prefix that defines where host bits begin.
         prefix_length: u8,
     },
 }

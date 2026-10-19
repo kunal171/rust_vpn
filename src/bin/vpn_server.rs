@@ -1,7 +1,8 @@
 //! Minimal UDP server used to exercise framed communication over UDP.
 //!
 //! It validates each received frame and replies with a framed acknowledgment.
-//! It does not yet tunnel or encrypt network traffic.
+//! It is intentionally unencrypted; the complete encrypted data path lives in
+//! the separate `vpn_tunnel` binary.
 
 use rust_vpn::{
     AppRole,

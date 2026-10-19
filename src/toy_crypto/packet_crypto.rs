@@ -26,10 +26,20 @@ pub const MAX_PLAINTEXT_SIZE: usize = MAX_PAYLOAD_SIZE - AUTHENTICATION_TAG_LENG
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Failures while protecting, authenticating, or replay-checking a frame.
 pub enum PacketCryptoError {
-    PlaintextTooLarge { actual: usize, maximum: usize },
+    /// Encryption overhead would make the payload exceed the frame limit.
+    PlaintextTooLarge {
+        /// Plaintext bytes supplied by the caller.
+        actual: usize,
+        /// Largest plaintext that leaves room for the authentication tag.
+        maximum: usize,
+    },
+    /// A protected or unprotected frame violated the generic wire format.
     InvalidFrame(ProtocolError),
+    /// ChaCha20-Poly1305 could not produce ciphertext.
     EncryptionFailed,
+    /// The ciphertext, key, nonce, or associated header data did not authenticate.
     AuthenticationFailed,
+    /// A valid authenticated packet reused an already accepted counter.
     ReplayRejected(ReplayError),
 }
 

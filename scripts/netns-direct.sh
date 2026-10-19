@@ -18,6 +18,7 @@ usage() {
     echo "Usage: sudo $0 {up|status|down}"
 }
 
+# Network namespaces and veth devices require network-administration rights.
 require_root() {
     if [[ ${EUID} -ne 0 ]]; then
         echo "This script needs network-administration privileges; run it with sudo." >&2
@@ -25,10 +26,12 @@ require_root() {
     fi
 }
 
+# Tests namespace ownership without relying on a substring match.
 namespace_exists() {
     ip netns list | awk '{print $1}' | grep -Fxq "$1"
 }
 
+# Host-side lookup used to detect and clean partially created labs.
 link_exists() {
     ip link show "$1" >/dev/null 2>&1
 }
@@ -69,6 +72,7 @@ up() {
 }
 
 status() {
+    # Report only this lab's namespaces, then show each isolated network stack.
     echo "Namespaces:"
     ip netns list | awk '{print $1}' | grep -E '^rvpn-(client|server)$' || true
 

@@ -1,6 +1,7 @@
 //! A TUN-reader thread queues inner packets, one sender thread protects all
 //! outbound messages, and the main thread authenticates inbound frames before
-//! writing Data packets to TUN or handling control messages.
+//! writing Data packets to TUN or handling control messages. The main thread
+//! also owns lifecycle transitions and installs fresh sessions after timeout.
 
 use rust_vpn::cidr::{CidrError, Ipv4Cidr};
 use rust_vpn::identity::{IDENTITY_PUBLIC_KEY_LENGTH, IDENTITY_SECRET_KEY_LENGTH, IdentityKeyPair};
@@ -43,19 +44,27 @@ const USAGE: &str = "usage: vpn_tunnel <client|server> <tun-address> <bind-addre
 /// Link MTU (1500) minus outer IPv4 (20), UDP (8), frame header (16),
 /// and authentication tag (16), avoiding outer IP fragmentation.
 const TUN_MTU: u16 = 1440;
+/// Maximum wait for one expected handshake response.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 // Same reasoning as tun_reader: the largest possible IPv4 packet.
 const PACKET_BUFFER_SIZE: usize = 65_535;
 
+/// Quiet period before the receiver requests authenticated proof of life.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+/// Consecutive unanswered probes allowed before discarding a session.
 const MAX_MISSED_KEEPALIVES: u8 = 3;
+/// Prevents repeated failed reconnect handshakes from spinning.
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
+/// Replaceable sender slot shared by the lifecycle supervisor and send worker.
 type SharedCryptoSender = Arc<Mutex<Option<CryptoSender>>>;
 
+/// Normal reasons for returning control from the established receive loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReceiveLoopExit {
+    /// Authenticated traffic remained absent through the configured probes.
     PeerTimedOut,
+    /// Ctrl+C requested an orderly lifecycle transition.
     Shutdown,
 }
 

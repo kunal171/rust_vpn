@@ -2,8 +2,9 @@
 //!
 //! The modular arithmetic and Diffie-Hellman modules are deliberately small,
 //! non-constant-time teaching implementations. HKDF and ChaCha20-Poly1305 come
-//! from established crates, but this module as a whole is not yet a production
-//! VPN protocol: it has no authenticated handshake or key rotation.
+//! from established crates. The real tunnel authenticates these primitives in
+//! a separate handshake module, but the project remains educational and has
+//! not received the review required for production cryptography.
 
 /// Toy Diffie-Hellman key agreement. Never use it for real secrets.
 pub mod diffie_hellman;

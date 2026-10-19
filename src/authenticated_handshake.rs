@@ -24,14 +24,17 @@ pub struct HandshakeResult {
 }
 
 impl HandshakeResult {
+    /// Returns the server-assigned identifier bound into the transcript.
     pub const fn session_id(&self) -> u32 {
         self.session_id
     }
 
+    /// Borrows the directional traffic keys without exposing them in logs.
     pub fn session_keys(&self) -> &SessionKeys {
         &self.session_keys
     }
 
+    /// Consumes the result so its identifier and keys can enter a session.
     pub fn into_parts(self) -> (u32, SessionKeys) {
         (self.session_id, self.session_keys)
     }
@@ -46,6 +49,7 @@ pub struct ClientHandshake {
 }
 
 impl ClientHandshake {
+    /// Generates the client ephemeral key and its first handshake message.
     pub fn start() -> (Self, ClientHello) {
         let key_exchange = EphemeralKeyExchange::generate();
         let ephemeral_public_key = key_exchange.public_key();
@@ -154,8 +158,11 @@ impl ServerHandshake {
 /// Failures that prevent a session from being installed.
 #[derive(Debug)]
 pub enum AuthenticatedHandshakeError {
+    /// A pinned Ed25519 identity or signature was invalid.
     Identity(IdentityError),
+    /// The peer supplied an unusable X25519 public key.
     KeyExchange(KeyExchangeError),
+    /// HKDF could not produce the required directional keys.
     KeyDerivation(InvalidLength),
 }
 
