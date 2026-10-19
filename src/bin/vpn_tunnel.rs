@@ -6,6 +6,7 @@ use rust_vpn::cidr::{CidrError, Ipv4Cidr};
 use rust_vpn::identity::{IDENTITY_PUBLIC_KEY_LENGTH, IDENTITY_SECRET_KEY_LENGTH, IdentityKeyPair};
 use rust_vpn::ipv4::decode_ipv4_header;
 use rust_vpn::keepalive::{KeepaliveAction, classify_authenticated_keepalive};
+use rust_vpn::liveness::{LivenessAction, LivenessTracker};
 use rust_vpn::outbound::OutboundMessage;
 use rust_vpn::protocol::{Frame, MessageType};
 use rust_vpn::toy_crypto::{
@@ -21,6 +22,7 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::num::NonZeroU8;
 use std::path::Path;
 use std::sync::mpsc::{Receiver as OutboundReceiver, SyncSender, sync_channel};
 use std::thread;
@@ -41,6 +43,9 @@ const TUN_MTU: u16 = 1440;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 // Same reasoning as tun_reader: the largest possible IPv4 packet.
 const PACKET_BUFFER_SIZE: usize = 65_535;
+
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const MAX_MISSED_KEEPALIVES: u8 = 3;
 
 /// Converts the command-line role into directional send and receive key usage.
 fn parse_role(value: &str) -> io::Result<SessionRole> {
@@ -139,7 +144,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    socket.set_read_timeout(None)?;
+    socket.set_read_timeout(Some(KEEPALIVE_INTERVAL))?;
 
     // The sending thread exclusively owns the send counter, while the receive
     // loop owns replay state for this freshly authenticated session.
@@ -231,6 +236,11 @@ fn udp_to_tun(
     mut confirmation_cache: Option<ServerConfirmationCache>,
     outbound_sender: SyncSender<OutboundMessage>,
 ) -> io::Result<()> {
+    let mut liveness = LivenessTracker::new(
+        NonZeroU8::new(MAX_MISSED_KEEPALIVES)
+            .expect("maximum missed keepalives must be greater than zero"),
+    );
+
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
 
     loop {
@@ -238,6 +248,34 @@ fn udp_to_tun(
             Ok(length) => length,
             // The peer is not running yet; keep waiting for it.
             Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                match liveness.on_interval_elapsed() {
+                    LivenessAction::SendKeepalive => {
+                        outbound_sender
+                            .send(OutboundMessage::Keepalive)
+                            .map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::BrokenPipe,
+                                    "outbound tunnel sender stopped",
+                                )
+                            })?;
+
+                        println!("No authenticated traffic; queued keepalive");
+                        continue;
+                    }
+                    LivenessAction::PeerTimedOut => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "authenticated peer missed the keepalive limit",
+                        ));
+                    }
+                }
+            }
             Err(error) => return Err(error),
         };
 
@@ -273,6 +311,8 @@ fn udp_to_tun(
                 continue;
             }
         };
+
+        liveness.record_authenticated_activity();
 
         if matches!(
             frame.message_type(),
