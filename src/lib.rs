@@ -38,6 +38,9 @@ pub mod tunnel_lifecycle;
 /// Authenticated handshake exchange over a connected UDP socket.
 pub mod udp_handshake;
 
+/// Linux physical-route discovery for preserving the VPN transport path.
+pub mod linux_route;
+
 /// Identifies which side of the client-server example is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppRole {
