@@ -21,6 +21,8 @@ pub mod keepalive;
 pub mod key_exchange;
 /// Bounded tracking of unanswered keepalive probes.
 pub mod liveness;
+/// Owned messages sent to the single cryptographic sender.
+pub mod outbound;
 /// Binary frame definitions and validation for data received from the network.
 pub mod protocol;
 /// Hand-written cryptographic math for learning. Never use it for real secrets.
