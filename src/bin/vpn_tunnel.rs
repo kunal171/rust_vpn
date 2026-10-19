@@ -8,6 +8,7 @@
 use rust_vpn::cidr::{CidrError, Ipv4Cidr};
 use rust_vpn::identity::{IDENTITY_PUBLIC_KEY_LENGTH, IDENTITY_SECRET_KEY_LENGTH, IdentityKeyPair};
 use rust_vpn::ipv4::decode_ipv4_header;
+use rust_vpn::outbound::OutboundMessage;
 use rust_vpn::protocol::{Frame, MessageType};
 use rust_vpn::toy_crypto::{
     key_derivation::SessionRole,
@@ -23,12 +24,15 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::Path;
+use std::sync::mpsc::{Receiver as OutboundReceiver, SyncSender, sync_channel};
 use std::thread;
 use std::time::Duration;
 use tun::{Configuration, Layer, Reader, Writer};
 
 const TUN_NAME: &str = "rvpn0";
 const TUN_NETMASK: &str = "255.255.255.0";
+/// Limits memory use when producers are faster than UDP transmission.
+const OUTBOUND_QUEUE_CAPACITY: usize = 64;
 
 const USAGE: &str = "usage: vpn_tunnel <client|server> <tun-address> <bind-address> \
      <peer-address> <allowed-ips> <identity-private-key> <peer-public-key>";
@@ -141,7 +145,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // The sending thread exclusively owns the send counter, while the receive
     // loop owns replay state for this freshly authenticated session.
-    let (sender, receiver) = session.into_split();
+    let (crypto_sender, crypto_receiver) = session.into_split();
 
     println!("Authenticated UDP peer {peer_address}");
 
@@ -169,49 +173,51 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (reader, writer) = device.split();
     let send_socket = socket.try_clone()?;
 
+    let (outbound_sender, outbound_receiver) = sync_channel(OUTBOUND_QUEUE_CAPACITY);
+
     thread::spawn(move || {
-        if let Err(error) = tun_to_udp(reader, send_socket, peer_address, sender) {
-            eprintln!("TUN to UDP stopped: {error}");
-            // A tunnel that can only receive is broken; stop the whole process.
+        if let Err(error) =
+            send_outbound_messages(send_socket, peer_address, crypto_sender, outbound_receiver)
+        {
+            eprintln!("Outbound sender stopped: {error}");
             std::process::exit(1);
         }
     });
 
-    udp_to_tun(socket, writer, &allowed_ips, receiver, confirmation_cache)?;
+    thread::spawn(move || {
+        if let Err(error) = read_tun_packets(reader, outbound_sender) {
+            eprintln!("TUN reader stopped: {error}");
+            std::process::exit(1);
+        }
+    });
+
+    udp_to_tun(
+        socket,
+        writer,
+        &allowed_ips,
+        crypto_receiver,
+        confirmation_cache,
+    )?;
 
     Ok(())
 }
 
 /// Reads inner IP packets from TUN and sends each in a protected Data frame.
-fn tun_to_udp(
+/// Reads inner IP packets from TUN and queues owned copies for encryption.
+fn read_tun_packets(
     mut reader: Reader,
-    socket: UdpSocket,
-    peer_address: SocketAddr,
-    mut sender: CryptoSender,
+    outbound_sender: SyncSender<OutboundMessage>,
 ) -> io::Result<()> {
     let mut buffer = vec![0_u8; PACKET_BUFFER_SIZE];
 
     loop {
         let packet_length = reader.read(&mut buffer)?;
-        let packet = &buffer[..packet_length];
 
-        // CryptoSender allocates a unique counter, encrypts the inner packet,
-        // and authenticates the visible frame header as associated data.
-        let frame = sender
-            .protect(MessageType::Data, packet.to_vec())
-            .map_err(io::Error::other)?;
+        let message = OutboundMessage::Data(buffer[..packet_length].to_vec());
 
-        let counter = frame.counter();
-        let encoded_frame = frame.encode();
-
-        // A missing peer must not stop the tunnel; drop the packet and go on.
-        match socket.send(&encoded_frame) {
-            Ok(sent_length) => println!(
-                "direction=send peer={peer_address} counter={counter} \
-                packet_length={packet_length} frame_length={sent_length}"
-            ),
-            Err(error) => eprintln!("Dropping packet {counter}: send failed: {error}"),
-        }
+        outbound_sender.send(message).map_err(|_| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "outbound sender disconnected")
+        })?;
     }
 }
 
@@ -304,6 +310,58 @@ fn udp_to_tun(
                 "Dropping packet {}: TUN write failed: {error}",
                 frame.counter()
             ),
+        }
+    }
+}
+
+/// Protects and sends every queued message using one monotonically
+/// increasing cryptographic counter.
+fn send_outbound_messages(
+    socket: UdpSocket,
+    peer_address: SocketAddr,
+    mut crypto_sender: CryptoSender,
+    outbound_receiver: OutboundReceiver<OutboundMessage>,
+) -> io::Result<()> {
+    loop {
+        let message = outbound_receiver.recv().map_err(|_| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "outbound queue disconnected")
+        })?;
+
+        let (message_type, payload) = message.into_parts();
+
+        let payload_length = payload.len();
+
+        let frame = crypto_sender
+            .protect(message_type, payload)
+            .map_err(io::Error::other)?;
+
+        let counter = frame.counter();
+        let encoded_frame = frame.encode();
+
+        match socket.send(&encoded_frame) {
+            Ok(sent_length) if sent_length == encoded_frame.len() => {
+                println!(
+                    "direction=send peer={peer_address} \
+                     type={message_type:?} counter={counter} \
+                     payload_length={payload_length} \
+                     frame_length={sent_length}"
+                );
+            }
+
+            Ok(sent_length) => {
+                eprintln!(
+                    "Dropping {message_type:?} counter={counter}: \
+                     sent {sent_length} of {} bytes",
+                    encoded_frame.len()
+                );
+            }
+
+            Err(error) => {
+                eprintln!(
+                    "Dropping {message_type:?} \
+                     counter={counter}: send failed: {error}"
+                );
+            }
         }
     }
 }
