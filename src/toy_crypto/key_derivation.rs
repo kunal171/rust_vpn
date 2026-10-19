@@ -20,7 +20,9 @@ const SERVER_TO_CLIENT_INFO: &[u8] = b"rust_vpn phase8 server-to-client";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Selects which directional key a local endpoint sends and receives with.
 pub enum SessionRole {
+    /// Initiates ClientHello and sends with the client-to-server key.
     Client,
+    /// Responds to ClientHello and sends with the server-to-client key.
     Server,
 }
 

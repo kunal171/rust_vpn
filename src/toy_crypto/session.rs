@@ -20,10 +20,19 @@ use std::{error::Error, fmt, sync::Arc};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Errors produced while sending or receiving through a cryptographic session.
 pub enum CryptoSessionError {
+    /// The unique outbound counter has been exhausted.
     Counter(SendCounterError),
+    /// Plaintext could not be represented as a protocol frame.
     Protocol(ProtocolError),
+    /// Packet protection, authentication, or replay checking failed.
     Crypto(PacketCryptoError),
-    WrongSessionId { expected: u32, received: u32 },
+    /// The packet belongs to a different negotiated session.
+    WrongSessionId {
+        /// Session identifier owned by this receiver.
+        expected: u32,
+        /// Session identifier carried by the frame.
+        received: u32,
+    },
 }
 
 impl fmt::Display for CryptoSessionError {

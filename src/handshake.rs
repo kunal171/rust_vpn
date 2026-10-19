@@ -17,9 +17,12 @@ const SERVER_AUTH_DOMAIN: &[u8] = b"rust_vpn server authentication v1";
 
 const CLIENT_AUTH_DOMAIN: &[u8] = b"rust_vpn client authentication v1";
 
+/// Exact byte length of the client's ephemeral X25519 public key.
 pub const CLIENT_HELLO_LENGTH: usize = PUBLIC_KEY_LENGTH;
+/// Exact byte length of a server key followed by its Ed25519 signature.
 pub const SERVER_HELLO_LENGTH: usize = PUBLIC_KEY_LENGTH + IDENTITY_SIGNATURE_LENGTH;
 
+/// Role-ordered values hashed and signed by both peers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HandshakeTranscript {
     session_id: u32,
@@ -27,18 +30,22 @@ pub struct HandshakeTranscript {
     server_ephemeral_public: [u8; PUBLIC_KEY_LENGTH],
 }
 
+/// Exact byte length of the client's Ed25519 authentication signature.
 pub const CLIENT_AUTH_LENGTH: usize = IDENTITY_SIGNATURE_LENGTH;
 
+/// Client proof that signs the role-specific transcript hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientAuth {
     signature: [u8; IDENTITY_SIGNATURE_LENGTH],
 }
 
+/// Client's initial message containing its ephemeral X25519 public key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientHello {
     ephemeral_public_key: [u8; PUBLIC_KEY_LENGTH],
 }
 
+/// Server ephemeral key and signature over the negotiated transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerHello {
     ephemeral_public_key: [u8; PUBLIC_KEY_LENGTH],
@@ -50,15 +57,23 @@ pub struct ServerHello {
 pub enum HandshakeError {
     /// A ClientHello must contain exactly one 32-byte X25519 public key.
     InvalidClientHelloLength {
+        /// Required wire length.
         expected: usize,
+        /// Length supplied by the peer.
         actual: usize,
     },
+    /// A ClientAuth must contain exactly one Ed25519 signature.
     InvalidClientAuthLength {
+        /// Required wire length.
         expected: usize,
+        /// Length supplied by the peer.
         actual: usize,
     },
+    /// A ServerHello must contain one X25519 key and one signature.
     InvalidServerHelloLength {
+        /// Required wire length.
         expected: usize,
+        /// Length supplied by the peer.
         actual: usize,
     },
 }
@@ -85,6 +100,7 @@ impl fmt::Display for HandshakeError {
 impl Error for HandshakeError {}
 
 impl HandshakeTranscript {
+    /// Constructs the canonical role-ordered transcript inputs.
     pub const fn new(
         session_id: u32,
         client_ephemeral_public: [u8; PUBLIC_KEY_LENGTH],
@@ -97,6 +113,7 @@ impl HandshakeTranscript {
         }
     }
 
+    /// Hashes the protocol domain, session ID, and both ephemeral keys.
     pub fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
 
@@ -111,10 +128,12 @@ impl HandshakeTranscript {
         hasher.finalize().into()
     }
 
+    /// Derives the digest that only the server is expected to sign.
     pub fn server_authentication_hash(&self) -> [u8; 32] {
         self.authentication_hash(SERVER_AUTH_DOMAIN)
     }
 
+    /// Derives the digest that only the client is expected to sign.
     pub fn client_authentication_hash(&self) -> [u8; 32] {
         self.authentication_hash(CLIENT_AUTH_DOMAIN)
     }
@@ -131,16 +150,19 @@ impl HandshakeTranscript {
 }
 
 impl ClientHello {
+    /// Wraps a newly generated client ephemeral public key.
     pub const fn new(ephemeral_public_key: [u8; PUBLIC_KEY_LENGTH]) -> Self {
         Self {
             ephemeral_public_key,
         }
     }
 
+    /// Returns the X25519 public key without allocating.
     pub const fn ephemeral_public_key(&self) -> [u8; PUBLIC_KEY_LENGTH] {
         self.ephemeral_public_key
     }
 
+    /// Produces the fixed-size ClientHello payload.
     pub const fn encode(&self) -> [u8; CLIENT_HELLO_LENGTH] {
         self.ephemeral_public_key
     }
@@ -165,6 +187,7 @@ impl ClientHello {
 }
 
 impl ServerHello {
+    /// Combines the server ephemeral key with its transcript signature.
     pub const fn new(
         ephemeral_public_key: [u8; PUBLIC_KEY_LENGTH],
         signature: [u8; IDENTITY_SIGNATURE_LENGTH],
@@ -175,14 +198,17 @@ impl ServerHello {
         }
     }
 
+    /// Returns the server's ephemeral X25519 public key.
     pub const fn ephemeral_public_key(&self) -> [u8; PUBLIC_KEY_LENGTH] {
         self.ephemeral_public_key
     }
 
+    /// Returns the Ed25519 signature authenticating the server transcript.
     pub const fn signature(&self) -> [u8; IDENTITY_SIGNATURE_LENGTH] {
         self.signature
     }
 
+    /// Encodes the key followed by the signature in their canonical order.
     pub fn encode(&self) -> [u8; SERVER_HELLO_LENGTH] {
         let mut bytes = [0_u8; SERVER_HELLO_LENGTH];
 
@@ -193,6 +219,7 @@ impl ServerHello {
         bytes
     }
 
+    /// Decodes an exact-size ServerHello payload from an untrusted peer.
     pub fn decode(bytes: &[u8]) -> Result<Self, HandshakeError> {
         if bytes.len() != SERVER_HELLO_LENGTH {
             return Err(HandshakeError::InvalidServerHelloLength {
@@ -212,18 +239,22 @@ impl ServerHello {
 }
 
 impl ClientAuth {
+    /// Wraps the client's signature over its role-specific transcript hash.
     pub const fn new(signature: [u8; IDENTITY_SIGNATURE_LENGTH]) -> Self {
         Self { signature }
     }
 
+    /// Returns the client's Ed25519 transcript signature.
     pub const fn signature(&self) -> [u8; IDENTITY_SIGNATURE_LENGTH] {
         self.signature
     }
 
+    /// Produces the fixed-size ClientAuth payload.
     pub const fn encode(&self) -> [u8; CLIENT_AUTH_LENGTH] {
         self.signature
     }
 
+    /// Decodes an exact-size ClientAuth payload from an untrusted peer.
     pub fn decode(bytes: &[u8]) -> Result<Self, HandshakeError> {
         if bytes.len() != CLIENT_AUTH_LENGTH {
             return Err(HandshakeError::InvalidClientAuthLength {

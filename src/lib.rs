@@ -3,10 +3,14 @@
 //! Keeping shared types and constants in the library avoids duplicating them
 //! across the binaries and lets integration tests import them.
 
+#![warn(missing_docs)]
+
 /// Authenticated X25519 and Ed25519 handshake state transitions.
 pub mod authenticated_handshake;
 /// IPv4 networks in CIDR notation, used as a peer's allowed source addresses.
 pub mod cidr;
+/// Pure route planning for an IPv4 full-tunnel client.
+pub mod full_tunnel;
 /// Canonical transcript hashed and authenticated during VPN handshakes.
 pub mod handshake;
 /// Encoding and validation of handshake messages carried over UDP.
@@ -19,12 +23,16 @@ pub mod ipv4;
 pub mod keepalive;
 /// Ephemeral X25519 key agreement for creating fresh session secrets.
 pub mod key_exchange;
+/// Linux physical-route discovery for preserving the VPN transport path.
+pub mod linux_route;
 /// Bounded tracking of unanswered keepalive probes.
 pub mod liveness;
 /// Owned messages sent to the single cryptographic sender.
 pub mod outbound;
 /// Binary frame definitions and validation for data received from the network.
 pub mod protocol;
+/// Safe installation and cleanup of Linux full-tunnel routes.
+pub mod route_manager;
 /// Hand-written cryptographic math for learning. Never use it for real secrets.
 pub mod toy_crypto;
 /// UDP addresses, buffer sizes, timeouts, and shared transport constants.

@@ -67,24 +67,38 @@ pub enum ProtocolError {
 
     /// The payload cannot fit inside the configured maximum frame size.
     PayloadTooLarge {
+        /// Payload length supplied or declared.
         actual: usize,
+        /// Largest payload accepted by this protocol.
         maximum: usize,
     },
 
+    /// The datagram cannot contain the complete fixed frame header.
     FrameTooShort {
+        /// Datagram bytes received.
         actual: usize,
+        /// Fixed header bytes required.
         minimum: usize,
     },
+    /// The datagram exceeds the protocol's bounded frame size.
     FrameTooLarge {
+        /// Datagram bytes received.
         actual: usize,
+        /// Largest complete frame accepted.
         maximum: usize,
     },
+    /// The peer uses a wire format this implementation does not support.
     UnsupportedVersion {
+        /// Version byte supplied by the peer.
         received: u8,
+        /// Version implemented locally.
         supported: u8,
     },
+    /// The header length field disagrees with the datagram boundary.
     PayloadLengthMismatch {
+        /// Payload bytes claimed by the header.
         declared: usize,
+        /// Payload bytes actually present after the header.
         actual: usize,
     },
 }
@@ -133,6 +147,7 @@ impl fmt::Display for ProtocolError {
 }
 
 impl Frame {
+    /// Creates a validated in-memory frame with the current protocol version.
     pub fn new(
         message_type: MessageType,
         session_id: u32,
@@ -308,6 +323,10 @@ impl TryFrom<u8> for MessageType {
     }
 }
 
+/// Encodes only the authenticated fixed header for a frame.
+///
+/// Packet protection uses these exact bytes as associated data, so changing a
+/// visible header field causes authentication to fail.
 pub fn encode_frame_header(
     message_type: MessageType,
     session_id: u32,

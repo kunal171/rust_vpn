@@ -1,3 +1,9 @@
+//! Runs the authenticated handshake over a connected UDP socket.
+//!
+//! UDP may lose a datagram, so requests are retransmitted with identical bytes
+//! and bounded attempts. Reusing the encoded bytes preserves the ephemeral
+//! keys, transcript, signature, and session ID belonging to one attempt.
+
 use std::{error::Error, fmt, io, net::UdpSocket};
 
 use crate::{
@@ -18,11 +24,16 @@ use crate::{
 
 const MAX_HANDSHAKE_ATTEMPTS: usize = 3;
 
+/// Message for which a blocking receive operation is currently waiting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandshakeStage {
+    /// Initial client ephemeral key.
     ClientHello,
+    /// Server ephemeral key, identity signature, and session assignment.
     ServerHello,
+    /// Client identity signature.
     ClientAuth,
+    /// Protected proof that both peers installed the negotiated keys.
     HandshakeComplete,
 }
 
@@ -37,28 +48,58 @@ impl fmt::Display for HandshakeStage {
     }
 }
 
+/// Failure while transporting or authenticating a UDP handshake.
 #[derive(Debug)]
 pub enum UdpHandshakeError {
+    /// The operating system rejected a socket operation.
     Io(io::Error),
-    Timeout { waiting_for: HandshakeStage },
+    /// No datagram arrived before the socket read timeout.
+    Timeout {
+        /// Stage whose expected message did not arrive.
+        waiting_for: HandshakeStage,
+    },
+    /// A handshake frame or payload violated its wire format.
     Transport(HandshakeTransportError),
+    /// Identity verification, X25519, or key derivation failed.
     Authentication(AuthenticatedHandshakeError),
 
-    PartialDatagram { expected: usize, sent: usize },
+    /// UDP reported fewer sent bytes than the complete datagram.
+    PartialDatagram {
+        /// Complete encoded datagram size.
+        expected: usize,
+        /// Bytes reported as sent by the socket.
+        sent: usize,
+    },
 
+    /// Secure randomness was unavailable for a session identifier.
     RandomSessionId(getrandom::Error),
 
+    /// The protected confirmation was not a structurally valid frame.
     Protocol(ProtocolError),
 
+    /// The confirmation could not be authenticated or replay-checked.
     Session(CryptoSessionError),
 
-    UnexpectedConfirmationType { received: MessageType },
+    /// The client opened a protected message other than HandshakeComplete.
+    UnexpectedConfirmationType {
+        /// Authenticated message type received by the client.
+        received: MessageType,
+    },
 
-    NonEmptyConfirmation { actual: usize },
+    /// HandshakeComplete contained a payload despite being a control message.
+    NonEmptyConfirmation {
+        /// Number of unexpected plaintext bytes.
+        actual: usize,
+    },
 
+    /// A repeated ClientHello changed the pending handshake transcript.
     ConflictingClientHello,
 
-    TooManyDuplicateClientHellos { maximum: usize },
+    /// Duplicate ClientHello processing exceeded its denial-of-service bound.
+    TooManyDuplicateClientHellos {
+        /// Maximum duplicates answered for one pending handshake.
+        maximum: usize,
+    },
 }
 
 impl fmt::Display for UdpHandshakeError {
@@ -165,6 +206,7 @@ impl From<CryptoSessionError> for UdpHandshakeError {
     }
 }
 
+/// Generates a nonzero unpredictable identifier for one negotiated session.
 fn generate_session_id() -> Result<u32, getrandom::Error> {
     loop {
         let mut bytes = [0_u8; 4];
@@ -179,6 +221,7 @@ fn generate_session_id() -> Result<u32, getrandom::Error> {
     }
 }
 
+/// Sends one complete UDP datagram and rejects a reported partial write.
 fn send_datagram(socket: &UdpSocket, bytes: &[u8]) -> Result<(), UdpHandshakeError> {
     let sent = socket.send(bytes)?;
 
@@ -192,6 +235,7 @@ fn send_datagram(socket: &UdpSocket, bytes: &[u8]) -> Result<(), UdpHandshakeErr
     Ok(())
 }
 
+/// Receives one datagram and translates socket timeouts into handshake context.
 fn receive_datagram(
     socket: &UdpSocket,
     buffer: &mut [u8],
@@ -205,6 +249,7 @@ fn receive_datagram(
     })
 }
 
+/// Retransmits identical request bytes after a bounded number of timeouts.
 fn send_and_receive_with_retry(
     socket: &UdpSocket,
     request: &[u8],
@@ -227,6 +272,7 @@ fn send_and_receive_with_retry(
     }
 }
 
+/// Accepts ClientAuth while safely answering duplicate ClientHello retries.
 fn receive_client_auth_with_duplicate_handling(
     socket: &UdpSocket,
     buffer: &mut [u8],
@@ -267,6 +313,7 @@ fn receive_client_auth_with_duplicate_handling(
     }
 }
 
+/// Authenticates the server's protected, empty HandshakeComplete message.
 fn accept_confirmation(session: &mut CryptoSession, bytes: &[u8]) -> Result<(), UdpHandshakeError> {
     // Decoding validates only the generic frame structure. Do not trust any
     // decoded field until the session authenticates the complete frame.
@@ -288,6 +335,10 @@ fn accept_confirmation(session: &mut CryptoSession, bytes: &[u8]) -> Result<(), 
     Ok(())
 }
 
+/// Initiates, authenticates, and confirms a client-side UDP session.
+///
+/// The returned session has already accepted server counter one, which carried
+/// HandshakeComplete. Client outbound data begins at its own counter one.
 pub fn perform_client_handshake(
     socket: &UdpSocket,
     client_identity: &IdentityKeyPair,
@@ -342,6 +393,10 @@ pub fn perform_client_handshake(
     Ok(session)
 }
 
+/// Responds to and authenticates a server-side UDP handshake.
+///
+/// The returned cache can resend the identical protected confirmation if the
+/// client's final authentication message is duplicated.
 pub fn perform_server_handshake(
     socket: &UdpSocket,
     server_identity: &IdentityKeyPair,
@@ -404,6 +459,7 @@ pub fn perform_server_handshake(
     Ok((session, retry_cache))
 }
 
+/// Bounded server state for recovering from a lost HandshakeComplete datagram.
 pub struct ServerConfirmationCache {
     expected_client_auth: Vec<u8>,
     confirmation: Vec<u8>,
@@ -419,6 +475,9 @@ impl ServerConfirmationCache {
         }
     }
 
+    /// Returns the cached confirmation only for an exact ClientAuth duplicate.
+    ///
+    /// Each successful lookup consumes one bounded retry allowance.
     pub fn response_for(&mut self, datagram: &[u8]) -> Option<&[u8]> {
         if self.remaining_responses == 0 {
             return None;

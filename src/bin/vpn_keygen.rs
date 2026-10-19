@@ -13,6 +13,7 @@ use zeroize::Zeroize;
 
 const USAGE: &str = "usage: vpn_keygen <private-key-file> <public-key-file>";
 
+/// Returns one required path argument with a useful command-line error.
 fn required_argument(
     arguments: &mut impl Iterator<Item = String>,
     name: &str,
@@ -22,6 +23,7 @@ fn required_argument(
         .ok_or_else(|| format!("missing {name}\n{USAGE}").into())
 }
 
+/// Creates rather than truncates a key file, with an explicit Unix mode.
 fn write_new_file(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -44,6 +46,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let identity = IdentityKeyPair::generate()?;
     let mut private_key = identity.secret_key_bytes();
 
+    // Erase the temporary seed even when creating or writing the file fails.
     let private_result = write_new_file(Path::new(&private_path), &private_key, 0o600);
     private_key.zeroize();
     private_result?;

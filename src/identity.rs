@@ -11,13 +11,19 @@ use ed25519_dalek::{
 };
 use zeroize::Zeroize;
 
+/// Number of bytes in a serialized Ed25519 verifying key.
 pub const IDENTITY_PUBLIC_KEY_LENGTH: usize = PUBLIC_KEY_LENGTH;
+/// Number of bytes in a serialized Ed25519 signature.
 pub const IDENTITY_SIGNATURE_LENGTH: usize = SIGNATURE_LENGTH;
+/// Number of bytes in the private Ed25519 seed stored on disk.
 pub const IDENTITY_SECRET_KEY_LENGTH: usize = SECRET_KEY_LENGTH;
 
+/// Failure while reconstructing or verifying a peer identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityError {
+    /// The supplied bytes are not a valid Ed25519 verifying key.
     InvalidPublicKey,
+    /// The signature does not authenticate the supplied message and key.
     InvalidSignature,
 }
 
@@ -32,6 +38,10 @@ impl fmt::Display for IdentityError {
 
 impl Error for IdentityError {}
 
+/// Long-term Ed25519 signing identity owned by one VPN peer.
+///
+/// `Debug` and `Clone` are intentionally omitted to reduce accidental secret
+/// duplication or logging.
 pub struct IdentityKeyPair {
     signing_key: SigningKey,
 }
@@ -46,10 +56,12 @@ impl IdentityKeyPair {
         Ok(Self::from_secret_bytes(&mut secret_bytes))
     }
 
+    /// Returns the public verifying key that the remote peer pins.
     pub fn public_key(&self) -> [u8; IDENTITY_PUBLIC_KEY_LENGTH] {
         self.signing_key.verifying_key().to_bytes()
     }
 
+    /// Signs a role-specific handshake transcript digest.
     pub fn sign(&self, message: &[u8]) -> [u8; IDENTITY_SIGNATURE_LENGTH] {
         self.signing_key.sign(message).to_bytes()
     }
@@ -71,6 +83,7 @@ impl IdentityKeyPair {
     }
 }
 
+/// Verifies an Ed25519 signature using a pinned peer public key.
 pub fn verify_signature(
     public_key: [u8; IDENTITY_PUBLIC_KEY_LENGTH],
     message: &[u8],

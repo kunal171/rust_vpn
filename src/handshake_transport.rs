@@ -1,3 +1,9 @@
+//! Maps typed handshake messages to and from generic protocol frames.
+//!
+//! Handshake frames use counter zero because encrypted data counters begin only
+//! after session keys exist. The client starts with session ID zero; the server
+//! assigns a nonzero ID that every later handshake message must match.
+
 use std::{error::Error, fmt};
 
 use crate::{
@@ -5,27 +11,41 @@ use crate::{
     protocol::{Frame, MessageType, ProtocolError},
 };
 
+/// Reserved counter used by every unprotected handshake frame.
 pub const HANDSHAKE_COUNTER: u64 = 0;
+/// Sentinel used before the server assigns a session identifier.
 pub const UNASSIGNED_SESSION_ID: u32 = 0;
 
+/// Structural or semantic failure in a framed handshake datagram.
 #[derive(Debug)]
 pub enum HandshakeTransportError {
+    /// The outer generic frame was malformed.
     Protocol(ProtocolError),
+    /// The typed handshake payload had an invalid length.
     Handshake(HandshakeError),
 
+    /// The frame carries a different handshake message than expected.
     UnexpectedMessageType {
+        /// Type required at this handshake stage.
         expected: MessageType,
+        /// Type supplied by the peer.
         received: MessageType,
     },
 
+    /// The datagram belongs to another handshake session.
     UnexpectedSessionId {
+        /// Session identifier negotiated for this exchange.
         expected: u32,
+        /// Session identifier supplied by the peer.
         received: u32,
     },
 
+    /// A server message attempted to use the reserved zero session ID.
     UnassignedSessionId,
 
+    /// A handshake frame used a data-plane packet counter.
     UnexpectedCounter {
+        /// Counter supplied by the peer.
         received: u64,
     },
 }
@@ -99,6 +119,7 @@ fn validate_type_and_counter(
     Ok(())
 }
 
+/// Wraps a ClientHello in a zero-session, zero-counter protocol frame.
 pub fn encode_client_hello(hello: ClientHello) -> Result<Vec<u8>, HandshakeTransportError> {
     let frame = Frame::new(
         MessageType::ClientHello,
@@ -110,6 +131,7 @@ pub fn encode_client_hello(hello: ClientHello) -> Result<Vec<u8>, HandshakeTrans
     Ok(frame.encode())
 }
 
+/// Validates a framed ClientHello and returns its typed payload.
 pub fn decode_client_hello(datagram: &[u8]) -> Result<ClientHello, HandshakeTransportError> {
     let frame = Frame::decode(datagram)?;
 
@@ -125,6 +147,7 @@ pub fn decode_client_hello(datagram: &[u8]) -> Result<ClientHello, HandshakeTran
     Ok(ClientHello::decode(frame.payload())?)
 }
 
+/// Wraps a ServerHello with the server-assigned nonzero session ID.
 pub fn encode_server_hello(
     session_id: u32,
     hello: ServerHello,
@@ -143,6 +166,7 @@ pub fn encode_server_hello(
     Ok(frame.encode())
 }
 
+/// Validates a framed ServerHello and returns its session ID and payload.
 pub fn decode_server_hello(datagram: &[u8]) -> Result<(u32, ServerHello), HandshakeTransportError> {
     let frame = Frame::decode(datagram)?;
 
@@ -157,6 +181,7 @@ pub fn decode_server_hello(datagram: &[u8]) -> Result<(u32, ServerHello), Handsh
     Ok((frame.session_id(), hello))
 }
 
+/// Wraps ClientAuth in the session assigned by the preceding ServerHello.
 pub fn encode_client_auth(
     session_id: u32,
     auth: ClientAuth,
@@ -175,6 +200,7 @@ pub fn encode_client_auth(
     Ok(frame.encode())
 }
 
+/// Validates ClientAuth against the session ID held by the server state.
 pub fn decode_client_auth(
     datagram: &[u8],
     expected_session_id: u32,

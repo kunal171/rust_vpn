@@ -29,6 +29,7 @@ usage() {
     echo "Usage: sudo $0 {up|route|nat|status|down}"
 }
 
+# Every topology-changing operation requires network-administration rights.
 require_root() {
     if [[ ${EUID} -ne 0 ]]; then
         echo "This script needs network-administration privileges; run it with sudo." >&2
@@ -36,10 +37,12 @@ require_root() {
     fi
 }
 
+# Tests namespace ownership without relying on a substring match.
 namespace_exists() {
     ip netns list | awk '{print $1}' | grep -Fxq "$1"
 }
 
+# Host-side lookup catches veth devices left by a partial setup.
 link_exists() {
     ip link show "$1" >/dev/null 2>&1
 }
@@ -100,7 +103,7 @@ route() {
 # Replaces the LAN host's return route with NAT on the gateway, so the LAN
 # host can reply without knowing the tunnel network exists. Run it after `route`.
 nat() {
-    # Remove fix 3 so replies can only come back through NAT.
+    # Remove the explicit return route so replies can come back only through NAT.
     if [[ -n "$(ip -n "${LAN_NS}" route show "${TUNNEL_SUBNET}")" ]]; then
         ip -n "${LAN_NS}" route del "${TUNNEL_SUBNET}"
     fi
@@ -119,6 +122,7 @@ EOF
 }
 
 status() {
+    # Show addresses, routes, and ARP/neighbor state for every routed hop.
     echo "Namespaces:"
     ip netns list | awk '{print $1}' | grep -E '^rvpnr-(client|server|lan)$' || true
 
@@ -134,6 +138,7 @@ status() {
 }
 
 down() {
+    # Deleting the namespaces also removes every veth endpoint they own.
     for ns in "${CLIENT_NS}" "${SERVER_NS}" "${LAN_NS}"; do
         if namespace_exists "${ns}"; then
             ip netns delete "${ns}"

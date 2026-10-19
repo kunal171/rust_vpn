@@ -19,11 +19,16 @@ pub enum KeepaliveAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeepaliveError {
     /// The caller supplied a frame that is not part of the keepalive exchange.
-    UnexpectedMessageType { received: MessageType },
+    UnexpectedMessageType {
+        /// Authenticated type supplied by the caller.
+        received: MessageType,
+    },
 
     /// Keepalive control messages do not carry application data.
     NonEmptyPayload {
+        /// Keepalive type carrying the forbidden payload.
         message_type: MessageType,
+        /// Number of unexpected payload bytes.
         actual: usize,
     },
 }

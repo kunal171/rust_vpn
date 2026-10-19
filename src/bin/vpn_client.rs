@@ -1,7 +1,8 @@
 //! Minimal UDP client used to exercise framed communication over UDP.
 //!
 //! It sends several binary `Data` frames and validates each corresponding
-//! acknowledgment. This is not yet an encrypted VPN client.
+//! acknowledgment. This diagnostic is intentionally unencrypted; the complete
+//! encrypted data path lives in the separate `vpn_tunnel` binary.
 
 use rust_vpn::{
     AppRole,
@@ -16,6 +17,7 @@ use std::{env, net::SocketAddr};
 // bytes; it does not have to be valid UTF-8 text.
 const PAYLOAD: &[u8] = &[0x00, 0x01, 0xff, b'H', b'i'];
 
+// Fixed values make packet captures and acknowledgment matching predictable.
 const SESSION_ID: u32 = 1;
 
 const FIRST_PACKET_COUNTER: u64 = 1;

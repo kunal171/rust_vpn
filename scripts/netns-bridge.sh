@@ -22,6 +22,7 @@ usage() {
     echo "Usage: sudo $0 {up|status|down}"
 }
 
+# Network namespaces, veth devices, and bridges require administrator rights.
 require_root() {
     if [[ ${EUID} -ne 0 ]]; then
         echo "This script needs network-administration privileges; run it with sudo." >&2
@@ -29,10 +30,12 @@ require_root() {
     fi
 }
 
+# Tests namespace ownership without relying on a substring match.
 namespace_exists() {
     ip netns list | awk '{print $1}' | grep -Fxq "$1"
 }
 
+# Host-side lookup used for the bridge and its veth ports.
 link_exists() {
     ip link show "$1" >/dev/null 2>&1
 }
@@ -84,6 +87,7 @@ up() {
 }
 
 status() {
+    # The bridge stays in the host namespace; its endpoints live in the peers.
     echo "Namespaces:"
     ip netns list | awk '{print $1}' | grep -E '^rvpnb-(client|server)$' || true
 

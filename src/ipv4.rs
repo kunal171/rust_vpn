@@ -34,7 +34,9 @@ const ICMP_ECHO_REPLY: u8 = 0;
 /// The IPv4 header fields this project currently needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ipv4Header {
+    /// Address of the host that created the inner packet.
     pub source: Ipv4Addr,
+    /// Address to which the inner packet is routed.
     pub destination: Ipv4Addr,
     /// Header size in bytes, including any options.
     pub header_length: usize,
@@ -50,28 +52,59 @@ pub struct Ipv4Header {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ipv4Error {
     /// The buffer cannot hold even a header without options.
-    PacketTooShort { actual: usize, minimum: usize },
+    PacketTooShort {
+        /// Bytes supplied by the caller.
+        actual: usize,
+        /// Minimum bytes required for IPv4.
+        minimum: usize,
+    },
     /// The IHL field claims a header smaller than the 20-byte minimum.
     InvalidHeaderLength {
+        /// Header size decoded from IHL.
         header_length: usize,
+        /// Minimum legal IPv4 header size.
         minimum: usize,
     },
     /// The IHL field claims more header bytes than the buffer contains.
-    TruncatedHeader { actual: usize, header_length: usize },
+    TruncatedHeader {
+        /// Bytes available in the buffer.
+        actual: usize,
+        /// Bytes claimed by IHL.
+        header_length: usize,
+    },
     /// The total length is smaller than the header or larger than the buffer.
     InvalidTotalLength {
+        /// Total size declared in the IPv4 header.
         total_length: usize,
+        /// Validated header size decoded from IHL.
         header_length: usize,
+        /// Bytes actually supplied by the caller.
         packet_length: usize,
     },
     /// The version field is not 4.
-    UnsupportedVersion { version: u8 },
+    UnsupportedVersion {
+        /// Version nibble decoded from the packet.
+        version: u8,
+    },
     /// The packet carries something other than ICMP.
-    UnexpectedProtocol { protocol: u8 },
+    UnexpectedProtocol {
+        /// IPv4 protocol number found in the header.
+        protocol: u8,
+    },
     /// The payload is too short to hold the fixed ICMP fields.
-    TruncatedIcmp { actual: usize, minimum: usize },
+    TruncatedIcmp {
+        /// ICMP bytes available after the IPv4 header.
+        actual: usize,
+        /// Minimum fixed ICMP header size.
+        minimum: usize,
+    },
     /// The ICMP message is valid but is not an echo request.
-    NotEchoRequest { icmp_type: u8, code: u8 },
+    NotEchoRequest {
+        /// ICMP type supplied by the packet.
+        icmp_type: u8,
+        /// ICMP subtype code supplied by the packet.
+        code: u8,
+    },
 }
 
 impl fmt::Display for Ipv4Error {
@@ -287,21 +320,27 @@ pub fn icmp_echo_reply(packet: &[u8]) -> Result<Vec<u8>, Ipv4Error> {
 }
 
 impl Ipv4Header {
+    /// Returns the packet's source address.
     pub fn source(&self) -> Ipv4Addr {
         self.source
     }
+    /// Returns the packet's destination address.
     pub fn destination(&self) -> Ipv4Addr {
         self.destination
     }
+    /// Returns the validated IPv4 header size, including options.
     pub fn header_length(&self) -> usize {
         self.header_length
     }
+    /// Returns the complete packet size declared by IPv4.
     pub fn total_length(&self) -> usize {
         self.total_length
     }
+    /// Returns the remaining hop limit.
     pub fn ttl(&self) -> u8 {
         self.ttl
     }
+    /// Returns the IPv4 payload protocol number.
     pub fn protocol(&self) -> u8 {
         self.protocol
     }
