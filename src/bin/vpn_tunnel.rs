@@ -1,13 +1,11 @@
-//! Connects a Linux TUN interface to a UDP peer.
-//!
-//! One thread reads packets from TUN, encrypts them, and sends protected Data
-//! frames to the peer. The main thread authenticates and decrypts received
-//! frames before writing their inner IP packets into TUN. Both ends run this
-//! same program with mirrored roles and addresses.
+//! A TUN-reader thread queues inner packets, one sender thread protects all
+//! outbound messages, and the main thread authenticates inbound frames before
+//! writing Data packets to TUN or handling control messages.
 
 use rust_vpn::cidr::{CidrError, Ipv4Cidr};
 use rust_vpn::identity::{IDENTITY_PUBLIC_KEY_LENGTH, IDENTITY_SECRET_KEY_LENGTH, IdentityKeyPair};
 use rust_vpn::ipv4::decode_ipv4_header;
+use rust_vpn::keepalive::{KeepaliveAction, classify_authenticated_keepalive};
 use rust_vpn::outbound::OutboundMessage;
 use rust_vpn::protocol::{Frame, MessageType};
 use rust_vpn::toy_crypto::{
@@ -175,6 +173,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let (outbound_sender, outbound_receiver) = sync_channel(OUTBOUND_QUEUE_CAPACITY);
 
+    let receive_outbound_sender = outbound_sender.clone();
+
     thread::spawn(move || {
         if let Err(error) =
             send_outbound_messages(send_socket, peer_address, crypto_sender, outbound_receiver)
@@ -197,12 +197,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         &allowed_ips,
         crypto_receiver,
         confirmation_cache,
+        receive_outbound_sender,
     )?;
 
     Ok(())
 }
 
-/// Reads inner IP packets from TUN and sends each in a protected Data frame.
 /// Reads inner IP packets from TUN and queues owned copies for encryption.
 fn read_tun_packets(
     mut reader: Reader,
@@ -228,6 +228,7 @@ fn udp_to_tun(
     allowed_ips: &[Ipv4Cidr],
     mut receiver: CryptoReceiver,
     mut confirmation_cache: Option<ServerConfirmationCache>,
+    outbound_sender: SyncSender<OutboundMessage>,
 ) -> io::Result<()> {
     let mut buffer = [0_u8; RECEIVE_BUFFER_SIZE];
 
@@ -272,14 +273,53 @@ fn udp_to_tun(
             }
         };
 
+        if matches!(
+            frame.message_type(),
+            MessageType::Keepalive | MessageType::KeepaliveResponse
+        ) {
+            let action = match classify_authenticated_keepalive(&frame) {
+                Ok(action) => action,
+
+                Err(error) => {
+                    eprintln!("Rejected keepalive counter={}: {error}", frame.counter());
+                    continue;
+                }
+            };
+
+            // An authenticated post-handshake control frame proves that the
+            // peer entered the established session.
+            confirmation_cache = None;
+
+            match action {
+                KeepaliveAction::SendResponse => {
+                    outbound_sender
+                        .send(OutboundMessage::KeepaliveResponse)
+                        .map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "outbound sender disconnected",
+                            )
+                        })?;
+
+                    println!("Queued KeepaliveResponse for counter={}", frame.counter());
+                }
+
+                KeepaliveAction::ResponseReceived => {
+                    println!(
+                        "Received authenticated KeepaliveResponse \
+                        counter={}",
+                        frame.counter()
+                    );
+                }
+            }
+
+            continue;
+        }
+
         if frame.message_type() != MessageType::Data {
             eprintln!("Ignoring unexpected {:?} frame", frame.message_type());
             continue;
         }
-
-        // Authenticated data proves the client received HandshakeComplete, so
-        // the server no longer needs to answer duplicate ClientAuth messages.
-        confirmation_cache = None;
 
         // The peer may only send from its allowed addresses; anything else
         // would let it inject spoofed traffic into this side's network.
