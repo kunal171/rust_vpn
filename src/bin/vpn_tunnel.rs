@@ -4,6 +4,7 @@
 //! also owns lifecycle transitions and installs fresh sessions after timeout.
 
 use rust_vpn::cidr::{CidrError, Ipv4Cidr};
+use rust_vpn::dns_manager::InstalledDnsConfiguration;
 use rust_vpn::full_tunnel::FullTunnelPlan;
 use rust_vpn::identity::{IDENTITY_PUBLIC_KEY_LENGTH, IDENTITY_SECRET_KEY_LENGTH, IdentityKeyPair};
 use rust_vpn::ipv4::decode_ipv4_header;
@@ -42,7 +43,8 @@ const TUN_NETMASK: &str = "255.255.255.0";
 const OUTBOUND_QUEUE_CAPACITY: usize = 64;
 
 const USAGE: &str = "usage: vpn_tunnel <client|server> <tun-address> <bind-address> \
-     <peer-address> <allowed-ips> <identity-private-key> <peer-public-key> [--full-tunnel]";
+     <peer-address> <allowed-ips> <identity-private-key> <peer-public-key> \
+     [--full-tunnel] [--dns <IPv4-address>]";
 
 /// Link MTU (1500) minus outer IPv4 (20), UDP (8), frame header (16),
 /// and authentication tag (16), avoiding outer IP fragmentation.
@@ -77,6 +79,13 @@ struct HandshakeOutput {
     confirmation_cache: Option<ServerConfirmationCache>,
 }
 
+/// Optional client behavior selected after the positional arguments.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TunnelOptions {
+    full_tunnel: bool,
+    dns_server: Option<Ipv4Addr>,
+}
+
 /// Converts the command-line role into directional send and receive key usage.
 fn parse_role(value: &str) -> io::Result<SessionRole> {
     match value {
@@ -94,37 +103,73 @@ fn parse_allowed_ips(text: &str) -> Result<Vec<Ipv4Cidr>, CidrError> {
     text.split(',').map(str::parse).collect()
 }
 
-/// Accepts the optional client-only full-tunnel routing flag.
-fn parse_full_tunnel_option(
+/// Parses client-only full-tunnel and DNS options in either order.
+fn parse_tunnel_options(
     arguments: &mut impl Iterator<Item = String>,
     role: SessionRole,
-) -> io::Result<bool> {
-    let enabled = match arguments.next().as_deref() {
-        None => false,
-        Some("--full-tunnel") => true,
-        Some(value) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unknown option {value:?}\n{USAGE}"),
-            ));
+) -> io::Result<TunnelOptions> {
+    let mut options = TunnelOptions::default();
+
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--full-tunnel" => {
+                if options.full_tunnel {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--full-tunnel was provided more than once",
+                    ));
+                }
+
+                options.full_tunnel = true;
+            }
+
+            "--dns" => {
+                if options.dns_server.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--dns was provided more than once",
+                    ));
+                }
+
+                let value = arguments.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("--dns requires an IPv4 address\n{USAGE}"),
+                    )
+                })?;
+
+                options.dns_server = Some(value.parse().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid IPv4 DNS server {value:?}"),
+                    )
+                })?);
+            }
+
+            value => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown option {value:?}\n{USAGE}"),
+                ));
+            }
         }
-    };
+    }
 
-    if arguments.next().is_some() {
+    if role != SessionRole::Client && (options.full_tunnel || options.dns_server.is_some()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("too many arguments\n{USAGE}"),
+            "--full-tunnel and --dns are valid only for the client role",
         ));
     }
 
-    if enabled && role != SessionRole::Client {
+    if options.dns_server.is_some() && !options.full_tunnel {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--full-tunnel is valid only for the client role",
+            "--dns requires --full-tunnel so resolver traffic cannot bypass the VPN",
         ));
     }
 
-    Ok(enabled)
+    Ok(options)
 }
 
 /// Returns the next command-line argument, or an error that names it.
@@ -214,7 +259,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let allowed_ips = parse_allowed_ips(&required_argument(&mut arguments, "allowed-ips")?)?;
     let identity_private_path = required_argument(&mut arguments, "identity-private-key")?;
     let peer_public_path = required_argument(&mut arguments, "peer-public-key")?;
-    let full_tunnel = parse_full_tunnel_option(&mut arguments, role)?;
+    let options = parse_tunnel_options(&mut arguments, role)?;
 
     let mut identity_secret = read_fixed_key::<IDENTITY_SECRET_KEY_LENGTH>(
         Path::new(&identity_private_path),
@@ -228,6 +273,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let shutdown_requested = Arc::new(AtomicBool::new(false));
     let signal_shutdown_requested = Arc::clone(&shutdown_requested);
+    let worker_failed = Arc::new(AtomicBool::new(false));
 
     ctrlc::set_handler(move || {
         signal_shutdown_requested.store(true, Ordering::Relaxed);
@@ -241,7 +287,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Discover the original transport path before installing any route that
     // directs ordinary traffic into the tunnel.
-    let physical_route: Option<PhysicalRoute> = if full_tunnel {
+    let physical_route: Option<PhysicalRoute> = if options.full_tunnel {
         let peer_ip = match peer_address.ip() {
             std::net::IpAddr::V4(address) => address,
             std::net::IpAddr::V6(_) => {
@@ -296,6 +342,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         None
     };
 
+    // Declare DNS after routes so error-path drops revert resolver policy
+    // before removing the routes that carry DNS traffic through the tunnel.
+    let mut dns_configuration = if let Some(dns_server) = options.dns_server {
+        let configuration = InstalledDnsConfiguration::install(TUN_NAME, dns_server)?;
+
+        println!("Routing DNS through {dns_server} on {TUN_NAME}");
+
+        Some(configuration)
+    } else {
+        None
+    };
+
     println!("Created {TUN_NAME} with address {tun_address}/24");
     println!(
         "UDP bound to {} with peer {peer_address}",
@@ -313,6 +371,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let receive_outbound_sender = outbound_sender.clone();
     let shared_crypto_sender = Arc::new(Mutex::new(Some(crypto_sender)));
     let send_crypto_sender = Arc::clone(&shared_crypto_sender);
+    let send_shutdown_requested = Arc::clone(&shutdown_requested);
+    let send_worker_failed = Arc::clone(&worker_failed);
 
     thread::spawn(move || {
         if let Err(error) = send_outbound_messages(
@@ -322,14 +382,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             outbound_receiver,
         ) {
             eprintln!("Outbound sender stopped: {error}");
-            std::process::exit(1);
+            send_worker_failed.store(true, Ordering::SeqCst);
+            send_shutdown_requested.store(true, Ordering::SeqCst);
         }
     });
+
+    let tun_shutdown_requested = Arc::clone(&shutdown_requested);
+    let tun_worker_failed = Arc::clone(&worker_failed);
 
     thread::spawn(move || {
         if let Err(error) = read_tun_packets(reader, outbound_sender) {
             eprintln!("TUN reader stopped: {error}");
-            std::process::exit(1);
+            tun_worker_failed.store(true, Ordering::SeqCst);
+            tun_shutdown_requested.store(true, Ordering::SeqCst);
         }
     });
 
@@ -396,9 +461,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("Reauthenticated UDP peer {peer_address}");
     }
 
+    if let Some(configuration) = dns_configuration.as_mut() {
+        configuration.remove()?;
+        println!("Restored DNS configuration");
+    }
+
     if let Some(routes) = full_tunnel_routes.as_mut() {
         routes.remove()?;
         println!("Removed IPv4 full-tunnel routes");
+    }
+
+    if worker_failed.load(Ordering::SeqCst) {
+        return Err("a tunnel worker stopped unexpectedly".into());
     }
 
     Ok(())
@@ -671,13 +745,18 @@ fn send_outbound_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::{SharedCryptoSender, parse_full_tunnel_option, parse_role, set_outbound_session};
+    use super::{
+        SharedCryptoSender, TunnelOptions, parse_role, parse_tunnel_options, set_outbound_session,
+    };
     use rust_vpn::protocol::MessageType;
     use rust_vpn::toy_crypto::{
         key_derivation::{SessionRole, derive_session_keys},
         session::CryptoSession,
     };
-    use std::sync::{Arc, Mutex};
+    use std::{
+        net::Ipv4Addr,
+        sync::{Arc, Mutex},
+    };
 
     #[test]
     fn parses_client_and_server_roles() {
@@ -691,19 +770,57 @@ mod tests {
     }
 
     #[test]
-    fn accepts_full_tunnel_only_for_the_client() {
-        let mut client_arguments = vec!["--full-tunnel".to_owned()].into_iter();
-        assert!(parse_full_tunnel_option(&mut client_arguments, SessionRole::Client).unwrap());
+    fn accepts_full_tunnel_and_dns_for_the_client() {
+        let mut arguments = vec![
+            "--dns".to_owned(),
+            "10.210.0.53".to_owned(),
+            "--full-tunnel".to_owned(),
+        ]
+        .into_iter();
 
-        let mut server_arguments = vec!["--full-tunnel".to_owned()].into_iter();
-        assert!(parse_full_tunnel_option(&mut server_arguments, SessionRole::Server).is_err());
+        assert_eq!(
+            parse_tunnel_options(&mut arguments, SessionRole::Client).unwrap(),
+            TunnelOptions {
+                full_tunnel: true,
+                dns_server: Some(Ipv4Addr::new(10, 210, 0, 53)),
+            }
+        );
     }
 
     #[test]
-    fn keeps_full_tunnel_disabled_when_the_flag_is_absent() {
+    fn keeps_optional_behavior_disabled_when_flags_are_absent() {
         let mut arguments = Vec::<String>::new().into_iter();
 
-        assert!(!parse_full_tunnel_option(&mut arguments, SessionRole::Client).unwrap());
+        assert_eq!(
+            parse_tunnel_options(&mut arguments, SessionRole::Client).unwrap(),
+            TunnelOptions::default()
+        );
+    }
+
+    #[test]
+    fn rejects_dns_without_full_tunnel() {
+        let mut arguments = vec!["--dns".to_owned(), "10.210.0.53".to_owned()].into_iter();
+
+        assert!(parse_tunnel_options(&mut arguments, SessionRole::Client).is_err());
+    }
+
+    #[test]
+    fn rejects_routing_options_for_the_server() {
+        let mut arguments = vec!["--full-tunnel".to_owned()].into_iter();
+
+        assert!(parse_tunnel_options(&mut arguments, SessionRole::Server).is_err());
+    }
+
+    #[test]
+    fn rejects_an_invalid_dns_server() {
+        let mut arguments = vec![
+            "--full-tunnel".to_owned(),
+            "--dns".to_owned(),
+            "not-an-address".to_owned(),
+        ]
+        .into_iter();
+
+        assert!(parse_tunnel_options(&mut arguments, SessionRole::Client).is_err());
     }
 
     #[test]
